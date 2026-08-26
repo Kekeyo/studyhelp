@@ -56,10 +56,10 @@ if errorlevel 1 (
     echo [OK] Vertex AI proxy enabled.
 )
 
-rem ===== Release ports =====
-echo [INFO] Releasing ports 5173 and 5000...
+rem ===== Release backend port =====
+echo [INFO] Releasing port 5000...
 
-for %%P in (5173 5000) do (
+for %%P in (5000) do (
     for /f "tokens=5" %%A in ('netstat -ano ^| findstr /R /C:":%%P .*LISTENING"') do (
         taskkill /F /PID %%A >nul 2>&1
     )
@@ -73,16 +73,16 @@ cd /d "%PROJECT_DIR%"
 echo.
 echo ========================================
 echo StudyHelp
-echo Frontend: http://localhost:5173/
-echo Backend : http://localhost:5000/
+echo Website : https://kekeyo.github.io/studyhelp/
+echo Local ADC proxy: http://127.0.0.1:5000/
 echo ========================================
 echo.
 
 rem ===== Open browser =====
-start "" powershell -NoProfile -WindowStyle Hidden -Command "Start-Sleep -Seconds 3; Start-Process 'http://localhost:5173/'"
+start "" powershell -NoProfile -WindowStyle Hidden -Command "Start-Sleep -Seconds 3; Start-Process 'https://kekeyo.github.io/studyhelp/'"
 
-rem ===== Run =====
-npm run dev
+rem ===== Run local Vertex ADC proxy =====
+npm run dev-backend
 
 pause
 endlocal

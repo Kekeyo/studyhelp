@@ -75,32 +75,28 @@ gcloud auth application-default login
 
 ### 2. 配置环境变量
 
-分别复制：
+复制：
 
 ```text
 backend/.env.example
-frontend/.env.example
 ```
 
 为：
 
 ```text
 backend/.env.local
-frontend/.env.local
 ```
 
 macOS / Linux：
 
 ```bash
 cp backend/.env.example backend/.env.local
-cp frontend/.env.example frontend/.env.local
 ```
 
 Windows PowerShell：
 
 ```powershell
 Copy-Item backend/.env.example backend/.env.local
-Copy-Item frontend/.env.example frontend/.env.local
 ```
 
 后端至少填写：
@@ -108,13 +104,6 @@ Copy-Item frontend/.env.example frontend/.env.local
 ```env
 GOOGLE_CLOUD_PROJECT=你的Project ID
 GOOGLE_CLOUD_LOCATION=global
-PROXY_HEADER=你生成的随机值
-```
-
-前端填写同一个随机值：
-
-```env
-VITE_PROXY_HEADER=与后端PROXY_HEADER完全相同的随机值
 ```
 
 `.env.local` 已被 Git 忽略，不要把真实配置提交到仓库。
@@ -131,28 +120,29 @@ npm install
 
 ---
 
-### 4. 本地启动
+### 4. 启动本地认证代理
 
-执行：
-
-```bash
-npm run dev
-```
-
-然后打开：
+Windows 用户直接双击项目根目录的：
 
 ```text
-http://localhost:5173/
+StudyHelp.bat
 ```
 
-在右上角设置中选择 **Google Vertex AI (ADC，仅限本地)**，即可使用本地 Vertex AI 模式。
+脚本会启动本机 Vertex ADC 代理，并自动打开：
 
-也可以分别启动前端与后端：
+```text
+https://kekeyo.github.io/studyhelp/
+```
+
+在右上角设置中选择 **Google Vertex AI (ADC，仅限本地)**，网页会通过 `http://127.0.0.1:5000` 使用这台电脑上的 ADC。
+
+也可以在项目根目录手动启动认证代理：
 
 ```bash
-npm run dev-frontend
 npm run dev-backend
 ```
+
+如需修改和调试前端，可执行 `npm run dev`，再打开 `http://localhost:5173/`。
 
 ---
 
@@ -174,7 +164,7 @@ $env:HTTPS_PROXY="http://127.0.0.1:7890"
 $env:NO_PROXY="localhost,127.0.0.1"
 $env:NODE_USE_ENV_PROXY="1"
 
-npm run dev
+npm run dev-backend
 ```
 
 代理端口请根据自己的代理软件设置修改。

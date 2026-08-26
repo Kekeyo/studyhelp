@@ -23,11 +23,37 @@ if (!GOOGLE_CLOUD_PROJECT || !GOOGLE_CLOUD_LOCATION) {
   console.error("Error: Environment variables GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION must be set.");
   process.exit(1);
 }
-const PROXY_HEADER = process?.env?.PROXY_HEADER;
-if (!PROXY_HEADER) {
-  console.error("Error: Environment variables PROXY_HEADER must be set.");
-  process.exit(1);
-}
+
+const ALLOWED_CLIENT_ORIGINS = new Set([
+  'https://kekeyo.github.io',
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+]);
+
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin && !ALLOWED_CLIENT_ORIGINS.has(origin)) {
+    return res.status(403).json({ error: 'This local proxy does not allow the requesting site.' });
+  }
+
+  if (origin) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    res.setHeader('Access-Control-Allow-Private-Network', 'true');
+  }
+
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(204);
+  }
+
+  next();
+});
+
+app.get('/health', (_req, res) => {
+  res.json({ ok: true, service: 'studyhelp-local-vertex-proxy' });
+});
 
 app.set('trust proxy', 1 /* number of proxies between user and server */);
 
@@ -184,12 +210,6 @@ function getRequestHeaders(accessToken) {
 
 // --- Proxy Endpoint ---
 app.post('/api-proxy', async (req, res) => {
-
-  // Check for the custom header added by the shim
-  if (req.headers['x-app-proxy'] !== PROXY_HEADER) {
-    return res.status(403).send('Forbidden: Request must originate from the Vertex App shim.');
-  }
-
   const { originalUrl, method, headers, body } = req.body;
   if (!originalUrl) {
     return res.status(400).send('Bad Request: originalUrl is required.');
@@ -333,6 +353,12 @@ const wss = new WebSocketServer({ noServer: true });
 server.on('upgrade', async (request, socket, head) => {
   const url = new URL(request.url, `http://${request.headers.host}`);
 
+  if (!ALLOWED_CLIENT_ORIGINS.has(request.headers.origin)) {
+    socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+    socket.destroy();
+    return;
+  }
+
   if (url.pathname === '/ws-proxy') {
     
     let targetUrl = url.searchParams.get('target');
@@ -464,5 +490,4 @@ server.on('upgrade', async (request, socket, head) => {
     socket.destroy();
   }
 });
-
 

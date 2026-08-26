@@ -9,7 +9,9 @@
 (function() {
   const originalFetch = window.fetch;
   const originalWebSocket = window.WebSocket;
-  const proxyHeader = import.meta.env.VITE_PROXY_HEADER || '';
+  const isGitHubPages = window.location.hostname === 'kekeyo.github.io';
+  const proxyHttpBase = isGitHubPages ? 'http://127.0.0.1:5000' : '';
+  const proxyWsBase = isGitHubPages ? 'ws://127.0.0.1:5000' : '';
 
   // Function to validate VertexGenAi endpoints
   function isValidUrl(url) {
@@ -75,9 +77,9 @@
       
       console.log('[Vertex AI Proxy Shim] Intercepted Vertex WebSocket request:', inputUrl);
       const targetUrl = encodeURIComponent(inputUrl);
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const host = window.location.host;
-      const proxyUrl = `${protocol}//${host}/ws-proxy?target=${targetUrl}`;
+      const proxyUrl = isGitHubPages
+        ? `${proxyWsBase}/ws-proxy?target=${targetUrl}`
+        : `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws-proxy?target=${targetUrl}`;
       return new originalWebSocket(proxyUrl, protocols);
     }
     return new originalWebSocket(url, protocols);
@@ -97,16 +99,6 @@
     // Check if the URL matches the patterns of Vertex AI APIs.
     if (normalizedUrl && isValidUrl(normalizedUrl)) {
       console.log('[Vertex AI Proxy Shim] Intercepted Vertex API request:', normalizedUrl);
-      if (!proxyHeader) {
-        return new Response(JSON.stringify({
-          error: 'Vertex local proxy is not configured',
-          details: 'Set VITE_PROXY_HEADER in frontend/.env.local to match backend PROXY_HEADER.'
-        }), {
-          status: 503,
-          statusText: 'Local Proxy Not Configured',
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
       // Prepare the request details to send to the local Node.js backend.
       const requestDetails = {
         originalUrl: normalizedUrl,
@@ -123,13 +115,13 @@
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'X-App-Proxy': proxyHeader,
           },
           body: JSON.stringify(requestDetails),
         };
 
-        console.log('[Vertex AI Proxy Shim] Fetching from local Node.js backend: /api-proxy');
-        const proxyResponse = await fetch('/api-proxy', proxyFetchOptions);
+        const proxyUrl = `${proxyHttpBase}/api-proxy`;
+        console.log(`[Vertex AI Proxy Shim] Fetching from local Node.js backend: ${proxyUrl}`);
+        const proxyResponse = await originalFetch(proxyUrl, proxyFetchOptions);
 
         if (proxyResponse.status === 401) {
             console.error('[Vertex Proxy Shim] Local Node.js backend returned 401. Authentication may be needed.');

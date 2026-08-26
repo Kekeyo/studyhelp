@@ -1,0 +1,27 @@
+{
+  "name": "studyhelp-frontend",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "latest",
+    "react-dom": "latest",
+    "lucide-react": "latest",
+    "katex": "latest",
+    "react-markdown": "latest",
+    "remark-math": "latest",
+    "rehype-katex": "latest",
+    "@google/genai": "latest"
+  },
+  "devDependencies": {
+    "@types/node": "latest",
+    "@vitejs/plugin-react": "latest",
+    "typescript": "latest",
+    "vite": "latest"
+  }
+}

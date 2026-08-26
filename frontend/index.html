@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="h-full overflow-hidden">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>考研智能学习工作台 - 信号与系统 / 数学一 / 英语一</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- KaTeX CSS for formula styling -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  
+  <style>
+    /* KaTeX formula rendering enhancements */
+    .katex-error {
+      color: #334155 !important;
+      background: transparent !important;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;
+      font-size: 0.95em;
+    }
+    .katex-display {
+      margin: 0.85em 0 !important;
+      overflow-x: auto;
+      overflow-y: hidden;
+      padding: 0.35em 0;
+    }
+    .katex {
+      font-size: 1.08em;
+      text-rendering: optimizeLegibility;
+    }
+    /* Ensure markdown table and code render neatly */
+    .prose table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1em 0;
+    }
+    .prose th, .prose td {
+      border: 1px solid #e2e8f0;
+      padding: 0.5em 0.75em;
+    }
+  </style>
+  
+  <!-- PDF.js for parsing and rendering PDFs -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script>
+    if (window.pdfjsLib) {
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    }
+  </script>
+
+  <!-- html2pdf.js for direct client-side PDF document generation and download -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+
+    <script>
+    window.process = { 
+      env: { 
+        API_KEY: localStorage.getItem('ky_gemini_api_key') || '' 
+      } 
+    };
+  </script>
+</head>
+<body class="bg-slate-50 text-slate-900 antialiased h-full overflow-hidden selection:bg-blue-100 selection:text-blue-900 font-sans">
+  <div id="root" class="h-full w-full overflow-hidden"></div>
+  <script type="module" src="./index.tsx"></script>
+</body>
+</html>

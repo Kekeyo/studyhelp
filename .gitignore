@@ -1,0 +1,16 @@
+node_modules/
+frontend/dist/
+
+.env*
+!.env.example
+
+*.log
+.npm/
+.cache/
+.vite/
+
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+

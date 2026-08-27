@@ -1,5 +1,5 @@
 import { GoogleGenAI } from '@google/genai';
-import { ProviderConfig, Attachment, ProviderType, StreamTelemetryCallbacks, TokenUsage } from '../types.ts';
+import { ProviderConfig, Attachment, ProviderType, StreamTelemetryCallbacks, StreamRequestOptions, TokenUsage } from '../types.ts';
 
 const DEFAULT_GEMINI_MODEL = 'gemini-3.6-flash';
 const LEGACY_GEMINI_MODEL = 'gemini-2.5-flash';
@@ -162,7 +162,8 @@ export async function streamMessage(
   onChunk: (chunk: string, full: string) => void,
   signal?: AbortSignal,
   customConfig?: ProviderConfig,
-  telemetry?: StreamTelemetryCallbacks
+  telemetry?: StreamTelemetryCallbacks,
+  requestOptions?: StreamRequestOptions
 ): Promise<string> {
   const config = customConfig || loadStoredProviderConfig();
   const requestSentAt = performance.now();
@@ -197,11 +198,13 @@ export async function streamMessage(
     });
     parts.push({ text: prompt });
 
+    const codeExecutionEnabled = requestOptions?.enableGoogleCodeExecution === true;
+
     telemetry?.onStatusChange?.(
       'requesting', 
       config.type === 'vertex' 
-        ? `正在通过 Vertex AI ADC 连接模型 [${config.model || DEFAULT_GEMINI_MODEL}]...` 
-        : `正在连接 Google Gemini API [${config.model || DEFAULT_GEMINI_MODEL}]...`
+        ? `正在通过 Vertex AI ADC 连接模型 [${config.model || DEFAULT_GEMINI_MODEL}]${codeExecutionEnabled ? '，Code Execution 已开启' : ''}...`
+        : `正在连接 Google Gemini API [${config.model || DEFAULT_GEMINI_MODEL}]${codeExecutionEnabled ? '，Code Execution 已开启' : ''}...`
     );
 
     const responseStream = await ai.models.generateContentStream({
@@ -209,7 +212,10 @@ export async function streamMessage(
       contents: {
         role: 'user',
         parts: parts
-      }
+      },
+      config: codeExecutionEnabled
+        ? { tools: [{ codeExecution: {} }] }
+        : undefined
     });
 
     telemetry?.onStatusChange?.('streaming', '模型正在流式输出中...');

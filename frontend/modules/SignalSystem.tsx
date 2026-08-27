@@ -380,7 +380,8 @@ export const SignalSystem: React.FC = () => {
                 tokensCount: usage.totalTokens
               });
             }
-          }
+          },
+          { enableGoogleCodeExecution: true }
         );
 
         const s1Duration = Math.round(performance.now() - s1Start);

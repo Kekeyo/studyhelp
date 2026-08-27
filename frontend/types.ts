@@ -81,6 +81,10 @@ export interface StreamTelemetryCallbacks {
   onTokenUsage?: (usage: TokenUsage) => void;
 }
 
+export interface StreamRequestOptions {
+  enableGoogleCodeExecution?: boolean;
+}
+
 export interface Attachment {
   name: string;
   type: string;

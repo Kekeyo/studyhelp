@@ -12,6 +12,7 @@ StudyHelp 是一个面向**考研复习与题目分析**的 AI 智能学习工�
 * 图片与 PDF 内容上传
 * Markdown 与 LaTeX 公式渲染
 * 流式输出与运行状态展示
+* Google 模型在第一阶段解题时默认启用 Code Execution（含 Vertex ADC）
 * Token 用量估算
 * TXT / PDF 导出
 * BYOK：使用自己的 API Key

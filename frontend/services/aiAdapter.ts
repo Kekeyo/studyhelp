@@ -1,16 +1,20 @@
 import { GoogleGenAI } from '@google/genai';
 import { ProviderConfig, Attachment, ProviderType, StreamTelemetryCallbacks, StreamRequestOptions, TokenUsage } from '../types.ts';
 
-const DEFAULT_GEMINI_MODEL = 'gemini-3.6-flash';
+const DEFAULT_GEMINI_MODEL = 'gemini-3.8-flash';
 const LEGACY_GEMINI_MODEL = 'gemini-2.5-flash';
 
 export const VERTEX_MODEL_OPTIONS = [
   {
-    label: 'Gemini 3.7 Flash（最新推荐 · 复杂推理 / 多模态 / Agent）',
+    label: 'Gemini 3.8 Flash（最新推荐 · 默认）',
+    value: 'gemini-3.8-flash'
+  },
+  {
+    label: 'Gemini 3.7 Flash（复杂推理 / 多模态 / Agent）',
     value: 'gemini-3.7-flash'
   },
   {
-    label: 'Gemini 3.6 Flash（稳定高速 · 默认推荐）',
+    label: 'Gemini 3.6 Flash（稳定高速）',
     value: 'gemini-3.6-flash'
   },
   {

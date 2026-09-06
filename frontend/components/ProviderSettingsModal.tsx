@@ -223,7 +223,7 @@ export const ProviderSettingsModal: React.FC<Props> = ({ isOpen, onClose, onSave
                   type="text"
                   value={config.model}
                   onChange={(e) => setConfig({ ...config, model: e.target.value })}
-                  placeholder="gemini-2.5-flash"
+                  placeholder="gemini-3.8-flash"
                   className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none font-mono"
                 />
               </div>

@@ -169,7 +169,7 @@ export const MathOne: React.FC = () => {
       <div className="flex items-center justify-between shrink-0">
         <div className="flex items-center gap-2">
           <div className="w-2 h-5 bg-blue-600 rounded-full" />
-          <h2 className="font-bold text-slate-800 text-base">数学一题目输入</h2>
+          <h2 className="font-bold text-slate-800 text-base">题目输入</h2>
         </div>
         <span className="text-[11px] font-semibold text-blue-700 bg-blue-50 px-2.5 py-1 rounded-full border border-blue-100">高数 / 线代 / 概率</span>
       </div>
@@ -179,11 +179,12 @@ export const MathOne: React.FC = () => {
           value={textInput}
           onChange={(event) => setTextInput(event.target.value)}
           onPaste={handlePaste}
-          placeholder={`粘贴数学一题目，如：
-设 f(x) 连续，计算二重积分 $\\iint_D (x^2+y)\,dxdy$...
-支持上传包含多题的完整 PDF / 图片试卷。
+          placeholder={`在这里粘贴数学一题目 / Markdown，例如：
+(a) 求函数的极值与最值
+(b) 计算定积分或二重积分
+(c) 求矩阵的特征值与特征向量
 
-💡 支持直接 Ctrl+V / 粘贴题目截图`}
+💡 支持整卷 PDF / 图片上传，以及直接 Ctrl+V / 粘贴截图图片`}
           className="flex-1 w-full p-3.5 text-sm bg-slate-50/50 border border-slate-200 rounded-xl resize-none focus:ring-2 focus:ring-blue-500 focus:bg-white outline-none transition-all font-sans leading-relaxed"
         />
       </div>
@@ -202,7 +203,7 @@ export const MathOne: React.FC = () => {
         ) : (
           <button onClick={runDirectSolve} className="w-full bg-blue-600 hover:bg-blue-700 active:scale-[0.99] text-white py-2.5 rounded-xl font-semibold flex items-center justify-center gap-2 transition-all shadow-sm text-sm">
             {isDone || isInterrupted ? <RotateCcw size={16} /> : <Play size={16} className="fill-current" />}
-            {isDone || isInterrupted ? '重新开始求解' : '开始求解'}
+            {isDone || isInterrupted ? '重新开始分析' : '开始分析'}
           </button>
         )}
       </div>

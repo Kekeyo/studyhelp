@@ -309,7 +309,7 @@ export const EnglishOne: React.FC = () => {
         <Uploader
           attachments={attachments}
           onFilesAdded={handleFilesAdded}
-          onRemove={(idx) => setAttachments(attachments.filter((_, i) => i !== idx))}
+          onRemove={(attachment) => setAttachments(previous => previous.filter(item => attachment.sourceId ? item.sourceId !== attachment.sourceId : item !== attachment))}
         />
       </div>
 

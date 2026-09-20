@@ -5,6 +5,7 @@ import MarkdownRenderer from '../components/MarkdownRenderer.tsx';
 import { Attachment, TaskStatus, TokenUsage } from '../types.ts';
 import { estimateTokens, loadStoredProviderConfig, streamMessage } from '../services/aiAdapter.ts';
 import { exportRenderedPdf } from '../utils/pdfExporter.ts';
+import { ResizableSplitPane } from '../components/ResizableSplitPane.tsx';
 
 const MATH_PAPER_PROMPT = `你是一名严谨的中国考研《数学一》名师。用户上传的是一整张试卷或一张/多张题目图片。
 
@@ -16,7 +17,7 @@ const MATH_PAPER_PROMPT = `你是一名严谨的中国考研《数学一》名�
 【解答质量】
 1. 图片、图形或表格中的边界、参数、坐标、选项必须先读清；不清晰处明确说明，不可臆造。
 2. 每题给出完整、可抄写的推导，而不是只给结论。关键积分、矩阵变换、概率公式、极值判别、方程检验不得跳步。
-3. 每题都要有代码核验摘要、详细解答和明确答案；数值解要代回原式验证。
+3. 数值解要代回原式验证。代码执行只用于内部核验，不要把工具调用、代码、处理阶段或核验摘要单独展示给用户。
 4. 公式使用规范 Markdown 与 LaTex：行内 $...$，独立公式 $$...$$；不要用代码块包住整份回答。
 
 请直接按下面格式连续输出整卷答案：
@@ -24,8 +25,6 @@ const MATH_PAPER_PROMPT = `你是一名严谨的中国考研《数学一》名�
 # 数学一整卷详细解析
 
 ## 第 1 题
-### 代码核验
-[说明实际运行的计算、关键输出与代回检查；无工具时如实说明]
 ### 解答
 [完整过程]
 ### 答
@@ -34,7 +33,7 @@ const MATH_PAPER_PROMPT = `你是一名严谨的中国考研《数学一》名�
 ## 第 2 题
 ...
 
-不要输出“第一阶段”“第二阶段”“正在拆题”或任何题目切换控件。`;
+不要输出“第一阶段”“第二阶段”“正在拆题”“代码模式”或任何题目切换控件。`;
 
 const createClipboardAttachment = (file: File): Promise<Attachment> => new Promise((resolve, reject) => {
   const reader = new FileReader();
@@ -57,7 +56,6 @@ export const MathOne: React.FC = () => {
   const [answer, setAnswer] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
   const [copied, setCopied] = useState(false);
-  const [codeExecutionUsed, setCodeExecutionUsed] = useState(false);
   const [tokenUsage, setTokenUsage] = useState<TokenUsage | null>(null);
   const answerRenderRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -96,12 +94,9 @@ export const MathOne: React.FC = () => {
     abortControllerRef.current = controller;
     setAnswer('');
     setErrorMsg('');
-    setCodeExecutionUsed(false);
     setTokenUsage(null);
     setStatus(TaskStatus.DRAFTING);
-    setStatusText(hasNativeCodeExecution
-      ? '代码模式已开启：正在阅读整卷并先执行计算核验…'
-      : '正在阅读整卷并生成连续的详细解答…');
+    setStatusText(hasNativeCodeExecution ? '正在阅读整卷并进行计算…' : '正在阅读整卷并生成详细解答…');
 
     const prompt = `${MATH_PAPER_PROMPT}\n\n试卷文本（扫描件以上传的页面图片为准）：\n${textInput || '无可用文字层，请完全根据上传图片识别。'}`;
     try {
@@ -119,8 +114,7 @@ export const MathOne: React.FC = () => {
             if (detail) setStatusText(detail);
           },
           onCodeExecution: (detail) => {
-            setCodeExecutionUsed(true);
-            setStatusText(`代码已执行：${detail.slice(0, 90)}`);
+            setStatusText(`正在计算并整理解答：${detail.slice(0, 54)}`);
           },
           onTokenUsage: setTokenUsage
         },
@@ -175,13 +169,9 @@ export const MathOne: React.FC = () => {
       <div className="flex items-center justify-between shrink-0">
         <div className="flex items-center gap-2">
           <div className="w-2 h-5 bg-blue-600 rounded-full" />
-          <h2 className="font-bold text-slate-800 text-base">数学一整卷输入</h2>
+          <h2 className="font-bold text-slate-800 text-base">数学一题目输入</h2>
         </div>
-        <span className="text-[11px] font-semibold text-blue-700 bg-blue-50 px-2.5 py-1 rounded-full border border-blue-100">直接代码解题</span>
-      </div>
-
-      <div className="rounded-xl border border-blue-100 bg-blue-50/70 px-3 py-2.5 text-xs text-blue-800 leading-relaxed shrink-0">
-        上传后不再拆出题目标签或多阶段流程。模型会直接按原卷顺序识别全部题目，先用代码核验，再连续输出每题完整过程。
+        <span className="text-[11px] font-semibold text-blue-700 bg-blue-50 px-2.5 py-1 rounded-full border border-blue-100">高数 / 线代 / 概率</span>
       </div>
 
       <div className="flex-1 min-h-[160px] flex flex-col">
@@ -189,7 +179,11 @@ export const MathOne: React.FC = () => {
           value={textInput}
           onChange={(event) => setTextInput(event.target.value)}
           onPaste={handlePaste}
-          placeholder="粘贴数学一题目，或直接上传整张试卷 PDF / JPG。\n\n系统会连续完成整卷解析与每题详细解答，不显示题目切换标签。"
+          placeholder={`粘贴数学一题目，如：
+设 f(x) 连续，计算二重积分 $\\iint_D (x^2+y)\,dxdy$...
+支持上传包含多题的完整 PDF / 图片试卷。
+
+💡 支持直接 Ctrl+V / 粘贴题目截图`}
           className="flex-1 w-full p-3.5 text-sm bg-slate-50/50 border border-slate-200 rounded-xl resize-none focus:ring-2 focus:ring-blue-500 focus:bg-white outline-none transition-all font-sans leading-relaxed"
         />
       </div>
@@ -208,7 +202,7 @@ export const MathOne: React.FC = () => {
         ) : (
           <button onClick={runDirectSolve} className="w-full bg-blue-600 hover:bg-blue-700 active:scale-[0.99] text-white py-2.5 rounded-xl font-semibold flex items-center justify-center gap-2 transition-all shadow-sm text-sm">
             {isDone || isInterrupted ? <RotateCcw size={16} /> : <Play size={16} className="fill-current" />}
-            {isDone || isInterrupted ? '重新直接解答整卷' : '直接开始代码解题'}
+            {isDone || isInterrupted ? '重新开始求解' : '开始求解'}
           </button>
         )}
       </div>
@@ -227,8 +221,8 @@ export const MathOne: React.FC = () => {
       {!answer && !isProcessing && (
         <div className="flex-1 bg-white rounded-2xl border border-slate-200/80 p-8 flex flex-col items-center justify-center text-center">
           <div className="w-14 h-14 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center mb-3 shadow-xs"><Layers size={26} /></div>
-          <h3 className="font-bold text-slate-800 text-base mb-1">数学一整卷直接解题</h3>
-          <p className="text-xs text-slate-500 max-w-md leading-relaxed">上传整张试卷后，系统会直接按试卷顺序完成每道题的代码核验和详细过程；不会生成题目卡片或多阶段报告。</p>
+          <h3 className="font-bold text-slate-800 text-base mb-1">数学一智能解题工作台</h3>
+          <p className="text-xs text-slate-500 max-w-md leading-relaxed">输入题目或上传整卷试卷后，系统将直接按原题顺序给出每道题的详细解答。</p>
         </div>
       )}
 
@@ -237,12 +231,11 @@ export const MathOne: React.FC = () => {
           <div>
             <div className="text-sm font-bold text-slate-800 flex items-center gap-2">
               {isDone ? <CheckCircle2 size={17} className="text-emerald-600" /> : <span className="w-2.5 h-2.5 rounded-full bg-blue-600 animate-pulse" />}
-              整卷直接代码解题
+              数学一解答
             </div>
             <p className="text-xs text-slate-500 mt-1">{statusText || '正在准备试卷…'}</p>
           </div>
           <div className="flex items-center gap-2 text-[11px] font-semibold">
-            {codeExecutionUsed && <span className="bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-1 rounded-lg">✓ 已获得代码执行结果</span>}
             {tokenUsage?.totalTokens && <span className="bg-slate-100 text-slate-600 border border-slate-200 px-2 py-1 rounded-lg">{tokenUsage.totalTokens} Tokens</span>}
           </div>
         </div>
@@ -251,7 +244,7 @@ export const MathOne: React.FC = () => {
       {answer && (
         <div className="bg-white rounded-2xl shadow-sm border-2 border-blue-100 p-5 shrink-0">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-3 mb-4">
-            <h3 className="font-extrabold text-slate-900 text-base">数学一整卷详细解答</h3>
+            <h3 className="font-extrabold text-slate-900 text-base">数学一详细解答</h3>
             <div className="flex items-center gap-1.5">
               <button onClick={handleCopy} className="px-2.5 py-1 text-xs font-medium border border-slate-200 rounded-lg hover:bg-blue-50 transition-colors flex items-center gap-1">
                 {copied ? <Check size={13} className="text-emerald-500" /> : <Copy size={13} />}{copied ? '已复制' : '复制'}
@@ -267,10 +260,12 @@ export const MathOne: React.FC = () => {
   );
 
   return (
-    <div className="h-full min-h-0 grid grid-cols-1 lg:grid-cols-[minmax(320px,420px)_minmax(0,1fr)] gap-4">
-      {leftContent}
-      {rightContent}
-    </div>
+    <ResizableSplitPane
+      leftContent={leftContent}
+      rightContent={rightContent}
+      defaultLeftWidth={420}
+      minLeftWidth={300}
+    />
   );
 };
 

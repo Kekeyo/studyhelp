@@ -1,15 +1,18 @@
 import React, { useRef, useState } from 'react';
-import { AlertCircle, Check, CheckCircle2, Copy, Download, FileText, Layers, Play, RotateCcw, Square } from 'lucide-react';
+import { AlertCircle, Check, Copy, Download, FileText, Layers, Play, RotateCcw, Square } from 'lucide-react';
 import Uploader from '../components/Uploader.tsx';
 import MarkdownRenderer from '../components/MarkdownRenderer.tsx';
-import { Attachment, TaskStatus, TokenUsage } from '../types.ts';
-import { estimateTokens, loadStoredProviderConfig, streamMessage } from '../services/aiAdapter.ts';
+import { Attachment, TaskStatus } from '../types.ts';
+import { loadStoredProviderConfig, streamMessage } from '../services/aiAdapter.ts';
 import { exportRenderedPdf } from '../utils/pdfExporter.ts';
 import { ResizableSplitPane } from '../components/ResizableSplitPane.tsx';
 
 const MATH_PAPER_PROMPT = `你是一名严谨的中国考研《数学一》名师。用户上传的是一整张试卷或一张/多张题目图片。
 
-请直接完成整卷解析与解答，不要先向用户展示拆题结果、题目标签、处理阶段、评分或 Reviewer 意见。你需要在内部准确识别所有独立题目（选择题、填空题、解答题及其小问），严格按试卷原有顺序连续作答，不能漏题、合题或调换顺序。
+请直接完成整卷解析与解答，不要先向用户展示拆题结果、题目标签、处理阶段、评分、Reviewer 意见、目录、总览或开场说明。你需要在内部准确识别所有独立题目（选择题、填空题、解答题及其小问），严格按试卷原有顺序连续作答，不能漏题、合题或调换顺序。
+
+【输出顺序，必须严格执行】
+从试卷的第 1 题开始处理：先对第 1 题计算核验，然后立刻输出第 1 题的完整解答；完成后才处理并输出第 2 题，依此类推。不要等待整卷都识别完才开始写，也不要先列题目清单。调用代码工具完成后，你输出给用户的第一个文字必须是“## 第 1 题”。
 
 【代码模式，必须先算后写】
 如果当前环境有 Code Execution 工具：对每道独立题在写解答前，必须先调用代码执行。使用 Python 的 sympy、numpy 或 mpmath 实际完成需要的代数化简、求根、积分、矩阵运算、数值代回或概率计算；不要伪造运行记录。若题目不适合符号计算，仍须用代码作数值抽查、边界检查或结果代回。当前环境没有代码工具时，必须如实说明并改用手算交叉核验。
@@ -20,9 +23,7 @@ const MATH_PAPER_PROMPT = `你是一名严谨的中国考研《数学一》名�
 3. 数值解要代回原式验证。代码执行只用于内部核验，不要把工具调用、代码、处理阶段或核验摘要单独展示给用户。
 4. 公式使用规范 Markdown 与 LaTex：行内 $...$，独立公式 $$...$$；不要用代码块包住整份回答。
 
-请直接按下面格式连续输出整卷答案：
-
-# 数学一整卷详细解析
+请直接按下面格式连续输出整卷答案；不要在“## 第 1 题”之前输出任何文字：
 
 ## 第 1 题
 ### 解答
@@ -52,11 +53,9 @@ export const MathOne: React.FC = () => {
   const [textInput, setTextInput] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [status, setStatus] = useState<TaskStatus>(TaskStatus.IDLE);
-  const [statusText, setStatusText] = useState('');
   const [answer, setAnswer] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
   const [copied, setCopied] = useState(false);
-  const [tokenUsage, setTokenUsage] = useState<TokenUsage | null>(null);
   const answerRenderRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
 
@@ -89,14 +88,11 @@ export const MathOne: React.FC = () => {
     }
 
     const config = loadStoredProviderConfig();
-    const hasNativeCodeExecution = config.type === 'gemini' || config.type === 'vertex';
     const controller = new AbortController();
     abortControllerRef.current = controller;
     setAnswer('');
     setErrorMsg('');
-    setTokenUsage(null);
     setStatus(TaskStatus.DRAFTING);
-    setStatusText(hasNativeCodeExecution ? '正在阅读整卷并进行计算…' : '正在阅读整卷并生成详细解答…');
 
     const prompt = `${MATH_PAPER_PROMPT}\n\n试卷文本（扫描件以上传的页面图片为准）：\n${textInput || '无可用文字层，请完全根据上传图片识别。'}`;
     try {
@@ -105,32 +101,20 @@ export const MathOne: React.FC = () => {
         attachments,
         (_delta, full) => {
           setAnswer(full);
-          setTokenUsage(estimateTokens(prompt, full));
         },
         controller.signal,
         config,
-        {
-          onStatusChange: (_stage, detail) => {
-            if (detail) setStatusText(detail);
-          },
-          onCodeExecution: (detail) => {
-            setStatusText(`正在计算并整理解答：${detail.slice(0, 54)}`);
-          },
-          onTokenUsage: setTokenUsage
-        },
+        undefined,
         { enableGoogleCodeExecution: true }
       );
       setAnswer(output);
       setStatus(TaskStatus.DONE);
-      setStatusText('整卷已按原题顺序完成代码核验与详细解答。');
     } catch (error: any) {
       if (error?.message === 'Aborted') {
         setStatus(TaskStatus.IDLE);
-        setStatusText('已停止本次解答。');
       } else {
         setStatus(TaskStatus.ERROR);
         setErrorMsg(error?.message || '整卷解答失败，请重试。');
-        setStatusText('解答中断。');
       }
     }
   };
@@ -227,25 +211,13 @@ export const MathOne: React.FC = () => {
         </div>
       )}
 
-      {(isProcessing || answer) && (
-        <div className="bg-white rounded-2xl border border-blue-100 shadow-sm p-4 shrink-0 flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <div className="text-sm font-bold text-slate-800 flex items-center gap-2">
-              {isDone ? <CheckCircle2 size={17} className="text-emerald-600" /> : <span className="w-2.5 h-2.5 rounded-full bg-blue-600 animate-pulse" />}
-              数学一解答
-            </div>
-            <p className="text-xs text-slate-500 mt-1">{statusText || '正在准备试卷…'}</p>
-          </div>
-          <div className="flex items-center gap-2 text-[11px] font-semibold">
-            {tokenUsage?.totalTokens && <span className="bg-slate-100 text-slate-600 border border-slate-200 px-2 py-1 rounded-lg">{tokenUsage.totalTokens} Tokens</span>}
-          </div>
-        </div>
+      {isProcessing && !answer && (
+        <p className="text-xs text-slate-400 px-2 pt-2">正在读取第 1 题…</p>
       )}
 
       {answer && (
         <div className="bg-white rounded-2xl shadow-sm border-2 border-blue-100 p-5 shrink-0">
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-3 mb-4">
-            <h3 className="font-extrabold text-slate-900 text-base">数学一详细解答</h3>
+          <div className="flex flex-wrap items-center justify-end gap-1.5 border-b border-slate-100 pb-3 mb-4">
             <div className="flex items-center gap-1.5">
               <button onClick={handleCopy} className="px-2.5 py-1 text-xs font-medium border border-slate-200 rounded-lg hover:bg-blue-50 transition-colors flex items-center gap-1">
                 {copied ? <Check size={13} className="text-emerald-500" /> : <Copy size={13} />}{copied ? '已复制' : '复制'}

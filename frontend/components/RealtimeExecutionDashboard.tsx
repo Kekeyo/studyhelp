@@ -166,6 +166,11 @@ export const RealtimeExecutionDashboard: React.FC<Props> = ({
                     {stageTokenCount > 0 ? `${stageTokenCount} Tokens` : '-'}
                   </span>
                 </div>
+                {stage.codeExecutionEnabled && (
+                  <div className={`mt-1.5 rounded-md px-2 py-1 text-[10px] font-sans font-semibold ${stage.codeExecutionUsed ? 'bg-emerald-100 text-emerald-800' : 'bg-blue-50 text-blue-700'}`} title={stage.codeExecutionLog || '本阶段已要求模型在作答前运行代码核验'}>
+                    {stage.codeExecutionUsed ? '✓ Code Execution 已实际返回结果' : 'Code Execution 已启用，等待模型调用'}
+                  </div>
+                )}
               </div>
 
               {/* Error indicator */}

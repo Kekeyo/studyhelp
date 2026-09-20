@@ -1,7 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { 
-  Play, Square, Download, CheckCircle2, AlertCircle, Loader2, Copy, 
-  Check, FileSpreadsheet, Layers, FastForward, RotateCcw, FileText,
+  Play, Square, Download, CheckCircle2, AlertCircle, Copy,
+  Check, Layers, FastForward, RotateCcw, FileText,
   ArrowUp, ArrowUpToLine
 } from 'lucide-react';
 import Uploader from '../components/Uploader.tsx';
@@ -12,18 +12,38 @@ import { RealtimeExecutionDashboard } from '../components/RealtimeExecutionDashb
 import { ResizableSplitPane } from '../components/ResizableSplitPane.tsx';
 import { exportRenderedPdf } from '../utils/pdfExporter.ts';
 
+interface ExamQuestion {
+  id: string;
+  label: string;
+  title: string;
+  text: string;
+  pages?: number[];
+}
+
+interface QuestionSolution {
+  questionId: string;
+  status: 'pending' | 'running' | 'done' | 'failed';
+  result: MathAnalysisResult;
+  error?: string;
+  codeExecutionUsed?: boolean;
+}
+
 const MATH_SPLIT_PROMPT = `你是一名中国考研《数学一》题库整理专家。
 请分析输入的文本或 PDF 题目：
 1. 判断其中包含了几道独立的考研数学题目（例如：单题，或包含题目1、题目2、题目3...）。
 2. 将题目按题号拆分，并给出每道题的简短标题。
 
-请严格返回 JSON 格式：
+请逐页查看附件中的整张试卷（扫描 PDF 的每页也会作为图片传入），不要漏题、不要解题。每一道大题保留题干及其所有小问；选择题、填空题和解答题都要单独列出。题干跨页时 pages 要包含所有相关页码。
+
+请严格只返回 JSON 数组，不要 Markdown 或解释：
 [
-  { "id": "1", "label": "题目 1", "title": "...", "text": "..." }
+  { "id": "1", "label": "第 1 题", "title": "...", "text": "完整题干和全部小问", "pages": [1] }
 ]`;
 
 const MATH_DRAFT_PROMPT = `你是一名严谨的中国考研《数学一》名师。
 请对该题进行【第一阶段：完整演算求解与严密推导】。
+
+【先代码、后书写（强制）】：如果当前环境提供 Code Execution 工具，必须在写任何解答前先调用它。用 Python 的 sympy / numpy / mpmath 等实际执行必要的代数化简、方程求根、积分、矩阵运算或数值代回；即便计算很短，也至少用代码核验最终结果。绝不可假称运行过代码。随后在输出的“## 代码运算与核验”中写明实际核验了什么、关键输入与关键输出，并将计算结果用于后续推导。若当前 Provider 确实没有代码工具，明确写“当前 Provider 无代码执行能力，以下为手算交叉检查”，不可伪造运行记录。
 
 【图形参数锁定、关键点逐一计算与数值代回检验（最高原则）】：
 1. 【图形提取与参数锁定】：在“## 题型与考点”后、正式做题前，必须设立【## 图像/图形信息提取】。一旦从图片中确定了积分区域 $D$ 的边界曲线方程、极坐标范围、顶点坐标、切线方程或概率分布图表特征，**必须立即锁定这些几何参数与边界约束**。后续所有计算步骤必须严格基于锁定的图形边界方程展开，严禁在后续小问中擅自改写边界或重新猜测！
@@ -56,6 +76,9 @@ $$
 2. 明确所属模块与考点。
 
 输出格式：
+## 代码运算与核验
+[实际调用的代码工具所完成的计算、关键输出和代回验证；没有工具时如实说明]
+
 ## 题型与考点
 所属模块：[高等数学 / 线性代数 / 概率论与数理统计]
 核心考点：...
@@ -128,10 +151,6 @@ const MATH_FINAL_PROMPT = `你是一名严谨的中国考研《数学一》权�
 ## 最终结论
 ...`;
 
-const MATH_CONTINUE_PROMPT = `你是一名严谨的中国考研《数学一》权威名师。
-上一轮由于网络中断或 Token 达到限制，解答未输出完整。
-直接输出标准 Markdown，不要使用代码块，请紧跟已有的前半部分，严格沿用前文已确定的数值与表达式，继续向下输出剩余步骤与最终结果，所有公式必须包含在 $...$ 或 $$...$$ 中，严禁裸输出 \\int, \\frac, \\begin，不要输出 \\_、\\*、\\# 等转义字符。`;
-
 const createInitialMathStageMetrics = (): Record<ExecutionPhase, StageMetrics> => {
   const currentCfg = loadStoredProviderConfig();
   return {
@@ -173,7 +192,8 @@ export const MathOne: React.FC = () => {
   const [activeStageId, setActiveStageId] = useState<ExecutionPhase | undefined>();
   const [stageMetrics, setStageMetrics] = useState<Record<ExecutionPhase, StageMetrics>>(createInitialMathStageMetrics);
 
-  const [questions, setQuestions] = useState<Array<{ id: string; label: string; title: string; text: string }>>([]);
+  const [questions, setQuestions] = useState<ExamQuestion[]>([]);
+  const [questionSolutions, setQuestionSolutions] = useState<QuestionSolution[]>([]);
   const [selectedQIdx, setSelectedQIdx] = useState(0);
 
   const [result, setResult] = useState<MathAnalysisResult>({
@@ -284,6 +304,9 @@ export const MathOne: React.FC = () => {
     setErrorMsg('');
     setFailedStageName('');
     setResult({ draftAnswer: '', reviewScore: null, reviewText: '', finalAnswer: '' });
+    setQuestions([]);
+    setQuestionSolutions([]);
+    setSelectedQIdx(0);
     setStageMetrics(createInitialMathStageMetrics());
     await runWorkflow(true);
   };
@@ -302,315 +325,174 @@ export const MathOne: React.FC = () => {
     abortControllerRef.current = new AbortController();
     const signal = abortControllerRef.current.signal;
     const cfg = loadStoredProviderConfig();
+    const emptyResult = (): MathAnalysisResult => ({ draftAnswer: '', reviewScore: null, reviewText: '', finalAnswer: '' });
+    let runningStage: ExecutionPhase = 'stage1_draft';
 
-    try {
-      let currentQuestionText = textInput;
-      if (textInput.length > 50 && (fromScratch || questions.length === 0)) {
-        setStatus(TaskStatus.PARSING);
-        setStatusText('正在结构化解析数学一试卷结构...');
-        try {
-          const splitRes = await sendMessage(
-            `${MATH_SPLIT_PROMPT}\n\n${textInput}`,
-            attachments,
-            cfg
-          );
-          const parsed = JSON.parse(splitRes.replace(/```json|```/g, '').trim());
-          if (Array.isArray(parsed) && parsed.length > 1) {
-            setQuestions(parsed);
-            currentQuestionText = parsed[0].text;
-          } else {
-            setQuestions([{ id: '1', label: '题目 1', title: '单题解析', text: textInput }]);
-          }
-        } catch {
-          setQuestions([{ id: '1', label: '题目 1', title: '数学题', text: textInput }]);
+    const parseQuestionList = (raw: string): ExamQuestion[] => {
+      const cleaned = raw.replace(/```(?:json)?/gi, '').trim();
+      const first = cleaned.indexOf('[');
+      const last = cleaned.lastIndexOf(']');
+      const candidate = first >= 0 && last > first ? cleaned.slice(first, last + 1) : cleaned;
+      try {
+        const parsed = JSON.parse(candidate);
+        const items = Array.isArray(parsed) ? parsed : parsed.questions;
+        if (!Array.isArray(items)) return [];
+        return items.map((item: any, index: number) => ({
+          id: String(item.id || index + 1),
+          label: String(item.label || `第 ${index + 1} 题`),
+          title: String(item.title || '数学一试题'),
+          text: String(item.text || '').trim(),
+          pages: Array.isArray(item.pages) ? item.pages.map(Number).filter(Number.isFinite) : undefined
+        })).filter((item: ExamQuestion) => item.text.length > 0);
+      } catch {
+        return [];
+      }
+    };
+
+    const attachmentsFor = (question: ExamQuestion) => {
+      const imageAttachments = attachments.filter(item => item.type.startsWith('image/'));
+      if (!question.pages?.length) return imageAttachments;
+      // Directly uploaded images have no page number and remain available. PDF
+      // page images are narrowed to the page(s) identified during splitting.
+      return imageAttachments.filter(item => !item.generated || !item.pageNumber || question.pages!.includes(item.pageNumber));
+    };
+
+    const putSolution = (solutions: QuestionSolution[], solution: QuestionSolution) => {
+      const next = solutions.filter(item => item.questionId !== solution.questionId).concat(solution);
+      setQuestionSolutions(next);
+      return next;
+    };
+
+    const solveQuestion = async (question: ExamQuestion, questionIndex: number, totalQuestions: number): Promise<QuestionSolution> => {
+      const questionAttachments = attachmentsFor(question);
+      const modelCanRunCode = cfg.type === 'gemini' || cfg.type === 'vertex';
+      let current = emptyResult();
+      let codeExecutionUsed = false;
+      setStageMetrics(createInitialMathStageMetrics());
+      setResult(current);
+
+      const updateLiveResult = (patch: Partial<MathAnalysisResult>) => {
+        current = { ...current, ...patch };
+        setResult(current);
+      };
+      const stageTelemetry = (stageId: ExecutionPhase, prefix: string) => ({
+        onStatusChange: (status: StageMetrics['status'], detail?: string) => {
+          updateStage(stageId, { status });
+          if (detail) setStatusText(`第 ${questionIndex + 1}/${totalQuestions} 题 · ${prefix}：${detail}`);
+        },
+        onFirstToken: (ttftMs: number) => updateStage(stageId, { ttftMs }),
+        onThoughtChunk: (_chunk: string, fullThought: string) => updateStage(stageId, { thoughtText: fullThought }),
+        onTokenUsage: (usage: TokenUsage) => updateStage(stageId, { tokenUsage: usage, tokensCount: usage.totalTokens }),
+        onCodeExecution: (detail: string) => {
+          codeExecutionUsed = true;
+          updateStage(stageId, { codeExecutionUsed: true, codeExecutionLog: detail });
+          setStatusText(`第 ${questionIndex + 1}/${totalQuestions} 题 · 已获得代码运行结果，正在据此推导…`);
         }
-      }
-
-      let currentDraft = result.draftAnswer;
-      let currentReview = result.reviewText;
-      let currentFinal = result.finalAnswer;
-
-      // ==========================================
-      // Stage 1: Mathematical Calculation
-      // ==========================================
-      if (fromScratch || !currentDraft.trim()) {
-        setActiveStageId('stage1_draft');
-        setStatus(TaskStatus.DRAFTING);
-        setStatusText('第一阶段：正在进行数学推导演算、各候选点计算与代回验算...');
-
-        const s1Start = performance.now();
-        const s1Prompt = `${MATH_DRAFT_PROMPT}\n\n题目内容：\n${currentQuestionText}`;
-
-        updateStage('stage1_draft', {
-          status: 'requesting',
-          modelUsed: cfg.model,
-          thinkingLevel: cfg.thinkingLevel || 'normal',
-          requestSentAt: s1Start,
-          charCount: 0,
-          tokensCount: 0
-        });
-
-        currentDraft = await streamMessage(
-          s1Prompt,
-          attachments,
-          (delta, full) => {
-            const currentDuration = Math.round(performance.now() - s1Start);
-            setResult(prev => ({ ...prev, draftAnswer: full }));
-            const liveTokens = estimateTokens(s1Prompt, full);
-            updateStage('stage1_draft', { 
-              charCount: full.length,
-              durationMs: currentDuration,
-              tokenUsage: liveTokens,
-              tokensCount: liveTokens.totalTokens
-            });
-          },
-          signal,
-          cfg,
-          {
-            onStatusChange: (s, detail) => {
-              updateStage('stage1_draft', { status: s });
-              if (detail) setStatusText(`第一阶段推导: ${detail}`);
-            },
-            onFirstToken: (ttft) => {
-              updateStage('stage1_draft', { ttftMs: ttft });
-            },
-            onThoughtChunk: (chunk, fullT) => {
-              updateStage('stage1_draft', { thoughtText: fullT });
-            },
-            onTokenUsage: (usage: TokenUsage) => {
-              updateStage('stage1_draft', { 
-                tokenUsage: usage,
-                tokensCount: usage.totalTokens
-              });
-            }
-          },
-          { enableGoogleCodeExecution: true }
-        );
-
-        const s1Duration = Math.round(performance.now() - s1Start);
-        const finalS1Tokens = estimateTokens(s1Prompt, currentDraft);
-        setResult(prev => ({ ...prev, draftAnswer: currentDraft }));
-        updateStage('stage1_draft', {
-          status: 'completed',
-          completedAt: performance.now(),
-          durationMs: s1Duration,
-          charCount: currentDraft.length,
-          tokenUsage: finalS1Tokens,
-          tokensCount: finalS1Tokens.totalTokens
-        });
-      }
-
-      // ==========================================
-      // Stage 2: Independent Reviewer
-      // ==========================================
-      if (fromScratch || !currentReview.trim()) {
-        setActiveStageId('stage2_review');
-        setStatus(TaskStatus.REVIEWING);
-        setStatusText('第二阶段：正在核查三形式一致性、代回真实性与全问自洽性...');
-
-        const s2Start = performance.now();
-        const reviewInput = `原题：\n${currentQuestionText}\n\n第一阶段推导与答案（含图形提取与锁定参数）：\n${currentDraft}`;
-        const s2Prompt = `${MATH_REVIEW_PROMPT}\n\n${reviewInput}`;
-
-        updateStage('stage2_review', {
-          status: 'requesting',
-          modelUsed: cfg.model,
-          thinkingLevel: cfg.thinkingLevel || 'normal',
-          requestSentAt: s2Start,
-          charCount: 0,
-          tokensCount: 0
-        });
-
-        currentReview = await streamMessage(
-          s2Prompt,
-          attachments,
-          (delta, full) => {
-            const currentDuration = Math.round(performance.now() - s2Start);
-            setResult(prev => ({ ...prev, reviewText: full }));
-            const liveTokens = estimateTokens(s2Prompt, full);
-            updateStage('stage2_review', { 
-              charCount: full.length,
-              durationMs: currentDuration,
-              tokenUsage: liveTokens,
-              tokensCount: liveTokens.totalTokens
-            });
-          },
-          signal,
-          cfg,
-          {
-            onStatusChange: (s, detail) => {
-              updateStage('stage2_review', { status: s });
-              if (detail) setStatusText(`第二阶段自检: ${detail}`);
-            },
-            onFirstToken: (ttft) => {
-              updateStage('stage2_review', { ttftMs: ttft });
-            },
-            onThoughtChunk: (chunk, fullT) => {
-              updateStage('stage2_review', { thoughtText: fullT });
-            },
-            onTokenUsage: (usage: TokenUsage) => {
-              updateStage('stage2_review', { 
-                tokenUsage: usage,
-                tokensCount: usage.totalTokens
-              });
-            }
-          }
-        );
-
-        const s2Duration = Math.round(performance.now() - s2Start);
-        const scoreMatch = currentReview.match(/评分：\s*(\d+)/) || currentReview.match(/(\d+)\s*\/\s*100/);
-        const score = scoreMatch ? parseInt(scoreMatch[1], 10) : 95;
-        const finalS2Tokens = estimateTokens(s2Prompt, currentReview);
-
-        setResult(prev => ({ ...prev, reviewScore: score, reviewText: currentReview }));
-        updateStage('stage2_review', {
-          status: 'completed',
-          completedAt: performance.now(),
-          durationMs: s2Duration,
-          charCount: currentReview.length,
-          tokenUsage: finalS2Tokens,
-          tokensCount: finalS2Tokens.totalTokens
-        });
-      }
-
-      // ==========================================
-      // Stage 3: Final Exam Solution
-      // ==========================================
-      setActiveStageId('stage3_final');
-      setStatus(TaskStatus.FINALIZING);
-      setStatusText('第三阶段：自检完成，正在调用模型生成数学一标准解答...');
-
-      const s3Start = performance.now();
-      updateStage('stage3_final', {
-        status: 'requesting',
-        modelUsed: cfg.model,
-        thinkingLevel: cfg.thinkingLevel || 'normal',
-        requestSentAt: s3Start,
-        charCount: 0,
-        tokensCount: 0
       });
 
-      if (currentFinal.trim().length > 40) {
-        const existing = currentFinal;
-        const continueInput = `原题：\n${currentQuestionText}\n\n已写出的前半部分解答：\n${existing}\n\n请接着往下写：`;
-        const s3Prompt = `${MATH_CONTINUE_PROMPT}\n\n${continueInput}`;
+      runningStage = 'stage1_draft';
+      setActiveStageId(runningStage);
+      setStatus(TaskStatus.DRAFTING);
+      setStatusText(`第 ${questionIndex + 1}/${totalQuestions} 题：先调用代码执行核验，再写完整推导…`);
+      const s1Prompt = `${MATH_DRAFT_PROMPT}\n\n试卷题号：${question.label}\n题目内容：\n${question.text}\n\n请只解这一题，不要处理试卷中的其他题。`;
+      const s1Start = performance.now();
+      updateStage(runningStage, {
+        status: 'requesting', modelUsed: cfg.model, thinkingLevel: cfg.thinkingLevel || 'normal', requestSentAt: s1Start,
+        charCount: 0, tokensCount: 0, codeExecutionEnabled: modelCanRunCode
+      });
+      const draft = await streamMessage(s1Prompt, questionAttachments, (_delta, full) => {
+        updateLiveResult({ draftAnswer: full });
+        const usage = estimateTokens(s1Prompt, full);
+        updateStage('stage1_draft', { charCount: full.length, durationMs: Math.round(performance.now() - s1Start), tokenUsage: usage, tokensCount: usage.totalTokens });
+      }, signal, cfg, stageTelemetry('stage1_draft', '代码核验与推导'), { enableGoogleCodeExecution: true });
+      updateLiveResult({ draftAnswer: draft });
+      const s1Usage = estimateTokens(s1Prompt, draft);
+      updateStage('stage1_draft', { status: 'completed', completedAt: performance.now(), durationMs: Math.round(performance.now() - s1Start), charCount: draft.length, tokenUsage: s1Usage, tokensCount: s1Usage.totalTokens });
 
-        const streamed = await streamMessage(
-          s3Prompt,
-          attachments,
-          (delta, full) => {
-            const combined = `${existing}\n\n${full}`;
-            const currentDuration = Math.round(performance.now() - s3Start);
-            setResult(prev => ({ ...prev, finalAnswer: combined }));
-            const liveTokens = estimateTokens(s3Prompt, full);
-            updateStage('stage3_final', { 
-              charCount: combined.length,
-              durationMs: currentDuration,
-              tokenUsage: liveTokens,
-              tokensCount: liveTokens.totalTokens
-            });
-          },
-          signal,
-          cfg,
-          {
-            onStatusChange: (s, detail) => {
-              updateStage('stage3_final', { status: s });
-              if (detail) setStatusText(`第三阶段书写: ${detail}`);
-            },
-            onFirstToken: (ttft) => {
-              updateStage('stage3_final', { ttftMs: ttft });
-            },
-            onThoughtChunk: (chunk, fullT) => {
-              updateStage('stage3_final', { thoughtText: fullT });
-            },
-            onTokenUsage: (usage: TokenUsage) => {
-              updateStage('stage3_final', { 
-                tokenUsage: usage,
-                tokensCount: usage.totalTokens
-              });
-            }
-          }
-        );
+      runningStage = 'stage2_review';
+      setActiveStageId(runningStage);
+      setStatus(TaskStatus.REVIEWING);
+      setStatusText(`第 ${questionIndex + 1}/${totalQuestions} 题：独立复核代码核验、推导和答案…`);
+      const s2Prompt = `${MATH_REVIEW_PROMPT}\n\n原题：\n${question.text}\n\n第一阶段推导与答案：\n${draft}`;
+      const s2Start = performance.now();
+      updateStage(runningStage, { status: 'requesting', modelUsed: cfg.model, thinkingLevel: cfg.thinkingLevel || 'normal', requestSentAt: s2Start, charCount: 0, tokensCount: 0 });
+      const review = await streamMessage(s2Prompt, questionAttachments, (_delta, full) => {
+        updateLiveResult({ reviewText: full });
+        const usage = estimateTokens(s2Prompt, full);
+        updateStage('stage2_review', { charCount: full.length, durationMs: Math.round(performance.now() - s2Start), tokenUsage: usage, tokensCount: usage.totalTokens });
+      }, signal, cfg, stageTelemetry('stage2_review', '独立复核'));
+      const scoreMatch = review.match(/评分：\s*(\d+)/) || review.match(/(\d+)\s*\/\s*100/);
+      const reviewScore = scoreMatch ? Number(scoreMatch[1]) : null;
+      updateLiveResult({ reviewText: review, reviewScore });
+      const s2Usage = estimateTokens(s2Prompt, review);
+      updateStage('stage2_review', { status: 'completed', completedAt: performance.now(), durationMs: Math.round(performance.now() - s2Start), charCount: review.length, tokenUsage: s2Usage, tokensCount: s2Usage.totalTokens });
 
-        const s3Duration = Math.round(performance.now() - s3Start);
-        const finalFullOutput = `${existing}\n\n${streamed}`;
-        const finalS3Tokens = estimateTokens(s3Prompt, streamed);
-        setResult(prev => ({ ...prev, finalAnswer: finalFullOutput }));
-        updateStage('stage3_final', {
-          status: 'completed',
-          completedAt: performance.now(),
-          durationMs: s3Duration,
-          charCount: finalFullOutput.length,
-          tokenUsage: finalS3Tokens,
-          tokensCount: finalS3Tokens.totalTokens
-        });
-      } else {
-        const finalInput = `原题：\n${currentQuestionText}\n\n第一阶段推导演算与结果：\n${currentDraft}\n\nReviewer 意见：\n${currentReview}`;
-        const s3Prompt = `${MATH_FINAL_PROMPT}\n\n${finalInput}`;
+      runningStage = 'stage3_final';
+      setActiveStageId(runningStage);
+      setStatus(TaskStatus.FINALIZING);
+      setStatusText(`第 ${questionIndex + 1}/${totalQuestions} 题：正在写入可直接抄写的详细过程…`);
+      const s3Prompt = `${MATH_FINAL_PROMPT}\n\n原题：\n${question.text}\n\n第一阶段（含代码核验）：\n${draft}\n\nReviewer 意见：\n${review}`;
+      const s3Start = performance.now();
+      updateStage(runningStage, { status: 'requesting', modelUsed: cfg.model, thinkingLevel: cfg.thinkingLevel || 'normal', requestSentAt: s3Start, charCount: 0, tokensCount: 0 });
+      const finalAnswer = await streamMessage(s3Prompt, questionAttachments, (_delta, full) => {
+        updateLiveResult({ finalAnswer: full });
+        const usage = estimateTokens(s3Prompt, full);
+        updateStage('stage3_final', { charCount: full.length, durationMs: Math.round(performance.now() - s3Start), tokenUsage: usage, tokensCount: usage.totalTokens });
+      }, signal, cfg, stageTelemetry('stage3_final', '标准答案书写'));
+      updateLiveResult({ finalAnswer });
+      const s3Usage = estimateTokens(s3Prompt, finalAnswer);
+      updateStage('stage3_final', { status: 'completed', completedAt: performance.now(), durationMs: Math.round(performance.now() - s3Start), charCount: finalAnswer.length, tokenUsage: s3Usage, tokensCount: s3Usage.totalTokens });
 
-        const finalStreamed = await streamMessage(
-          s3Prompt,
-          attachments,
-          (delta, full) => {
-            const currentDuration = Math.round(performance.now() - s3Start);
-            setResult(prev => ({ ...prev, finalAnswer: full }));
-            const liveTokens = estimateTokens(s3Prompt, full);
-            updateStage('stage3_final', { 
-              charCount: full.length,
-              durationMs: currentDuration,
-              tokenUsage: liveTokens,
-              tokensCount: liveTokens.totalTokens
-            });
-          },
-          signal,
-          cfg,
-          {
-            onStatusChange: (s, detail) => {
-              updateStage('stage3_final', { status: s });
-              if (detail) setStatusText(`第三阶段书写: ${detail}`);
-            },
-            onFirstToken: (ttft) => {
-              updateStage('stage3_final', { ttftMs: ttft });
-            },
-            onThoughtChunk: (chunk, fullT) => {
-              updateStage('stage3_final', { thoughtText: fullT });
-            },
-            onTokenUsage: (usage: TokenUsage) => {
-              updateStage('stage3_final', { 
-                tokenUsage: usage,
-                tokensCount: usage.totalTokens
-              });
-            }
-          }
-        );
+      return { questionId: question.id, status: 'done', result: current, codeExecutionUsed };
+    };
 
-        const s3Duration = Math.round(performance.now() - s3Start);
-        const finalS3Tokens = estimateTokens(s3Prompt, finalStreamed);
-        setResult(prev => ({ ...prev, finalAnswer: finalStreamed }));
-        updateStage('stage3_final', {
-          status: 'completed',
-          completedAt: performance.now(),
-          durationMs: s3Duration,
-          charCount: finalStreamed.length,
-          tokenUsage: finalS3Tokens,
-          tokensCount: finalS3Tokens.totalTokens
-        });
+    try {
+      let examQuestions = questions;
+      if (fromScratch || examQuestions.length === 0) {
+        setStatus(TaskStatus.PARSING);
+        setStatusText('正在逐页阅读整张数学一试卷并按题号拆分…');
+        const prompt = `${MATH_SPLIT_PROMPT}\n\n已提取的文本（扫描件以附件页面为准）：\n${textInput || '无可用文本，请完全根据上传的试卷页面识别。'}`;
+        const splitResponse = await sendMessage(prompt, attachments, cfg);
+        examQuestions = parseQuestionList(splitResponse);
+        if (!examQuestions.length) {
+          examQuestions = [{ id: '1', label: '第 1 题', title: '整卷识别结果', text: textInput || '请直接读取上传的试卷图片，识别并解答其中的全部题目。' }];
+        }
+        setQuestions(examQuestions);
+        setSelectedQIdx(0);
       }
 
+      let solutions = fromScratch ? [] : questionSolutions;
+      for (let index = 0; index < examQuestions.length; index++) {
+        const question = examQuestions[index];
+        const existing = solutions.find(item => item.questionId === question.id);
+        if (!fromScratch && existing?.status === 'done') continue;
+
+        setSelectedQIdx(index);
+        const running: QuestionSolution = { questionId: question.id, status: 'running', result: existing?.result || emptyResult() };
+        solutions = putSolution(solutions, running);
+        try {
+          const solved = await solveQuestion(question, index, examQuestions.length);
+          solutions = putSolution(solutions, solved);
+        } catch (error: any) {
+          if (error?.message === 'Aborted') throw error;
+          solutions = putSolution(solutions, { questionId: question.id, status: 'failed', result: existing?.result || emptyResult(), error: error?.message || '该题求解失败' });
+          throw error;
+        }
+      }
       setStatus(TaskStatus.DONE);
-      setStatusText('全流程考研数学一推理与解答生成完成');
+      setActiveStageId(undefined);
+      setStatusText(`整卷共 ${examQuestions.length} 题，已逐题完成代码核验、详细推导与标准答案。`);
     } catch (err: any) {
-      if (err.message !== 'Aborted') {
+      if (err?.message !== 'Aborted') {
         setStatus(TaskStatus.ERROR);
-        const failedStage = activeStageId || 'stage1_draft';
-        const stageLabel = stageMetrics[failedStage]?.stageName || '当前阶段';
+        const stageLabel = stageMetrics[runningStage]?.stageName || '当前阶段';
         setFailedStageName(stageLabel);
-        updateStage(failedStage, {
-          status: 'failed',
-          error: err.message
-        });
-        setErrorMsg(err.message || '求解中断，可点击“继续分析”');
-        setStatusText(`执行失败于【${stageLabel}】`);
+        updateStage(runningStage, { status: 'failed', error: err?.message || '求解中断' });
+        setErrorMsg(err?.message || '求解中断，可点击“继续分析”重试未完成题目');
+        setStatusText(`执行失败于【${stageLabel}】；已完成的题目结果不会丢失。`);
+      } else {
+        setStatus(TaskStatus.IDLE);
+        setStatusText('已停止；点击“继续分析”可从未完成题目重新开始。');
       }
     }
   };
@@ -618,9 +500,8 @@ export const MathOne: React.FC = () => {
   const handleSelectQuestion = (idx: number) => {
     setSelectedQIdx(idx);
     const q = questions[idx];
-    if (q) {
-      setTextInput(q.text);
-    }
+    const solution = q && questionSolutions.find(item => item.questionId === q.id);
+    if (solution) setResult(solution.result);
   };
 
   const isInterrupted = status === TaskStatus.ERROR || (status === TaskStatus.IDLE && Boolean(result.draftAnswer && !result.finalAnswer));
@@ -726,8 +607,10 @@ export const MathOne: React.FC = () => {
                   ? 'bg-blue-600 text-white shadow-xs'
                   : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
               }`}
-            >
+              >
               {q.label}
+              {questionSolutions.find(item => item.questionId === q.id)?.status === 'done' && <CheckCircle2 size={12} />}
+              {questionSolutions.find(item => item.questionId === q.id)?.status === 'failed' && <AlertCircle size={12} />}
             </button>
           ))}
         </div>
@@ -739,7 +622,7 @@ export const MathOne: React.FC = () => {
           value={textInput}
           onChange={(e) => setTextInput(e.target.value)}
           onPaste={handlePaste}
-          placeholder="粘贴数学一题目，如：&#10;设 f(x) 连续，计算二重积分 \iint_D (x^2 + y) dxdy...&#10;支持上传包含多题的完整 PDF 试卷。&#10;&#10;💡 支持直接 Ctrl+V / 粘贴题目截图"
+          placeholder="粘贴数学一题目，如：&#10;设 f(x) 连续，计算二重积分 \iint_D (x^2 + y) dxdy...&#10;或直接上传整张试卷 PDF / JPG：系统会逐页识别、按题号依次求解。&#10;&#10;💡 数学计算默认先使用 Code Execution 核验，再输出详细过程"
           className="flex-1 w-full p-3.5 text-sm bg-slate-50/50 border border-slate-200 rounded-xl resize-none focus:ring-2 focus:ring-blue-500 focus:bg-white outline-none transition-all font-sans leading-relaxed"
         />
       </div>
@@ -749,7 +632,10 @@ export const MathOne: React.FC = () => {
         <Uploader
           attachments={attachments}
           onFilesAdded={handleFilesAdded}
-          onRemove={(idx) => setAttachments(attachments.filter((_, i) => i !== idx))}
+          onRemove={(attachment) => setAttachments(prev => prev.filter(item => {
+            if (attachment.sourceId) return item.sourceId !== attachment.sourceId;
+            return item !== attachment;
+          }))}
         />
       </div>
 
@@ -765,7 +651,7 @@ export const MathOne: React.FC = () => {
                   title="从中断处直接接着分析"
                 >
                   <FastForward size={16} className="fill-current" />
-                  <span>继续分析 (断点续解)</span>
+                  <span>继续分析未完成题目</span>
                 </button>
                 <button
                   onClick={handleStartAnalysis}
@@ -781,7 +667,7 @@ export const MathOne: React.FC = () => {
                 className="flex-1 bg-blue-600 hover:bg-blue-700 active:scale-[0.99] text-white py-2.5 rounded-xl font-semibold flex items-center justify-center gap-2 transition-all shadow-sm text-sm"
               >
                 {isDone ? <RotateCcw size={16} /> : <Play size={16} className="fill-current" />}
-                <span>{isDone ? '重新开始求解' : '开始求解'}</span>
+                <span>{isDone ? '重新开始整卷求解' : '开始整卷求解'}</span>
               </button>
             )}
           </div>

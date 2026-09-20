@@ -70,6 +70,11 @@ export interface StageMetrics {
   thoughtText?: string;
   tokenUsage?: TokenUsage;
   tokensCount?: number; // Total tokens for this stage
+  /** Whether the provider was asked to enable its native code-execution tool. */
+  codeExecutionEnabled?: boolean;
+  /** Set only when the model actually returns a code-execution tool part. */
+  codeExecutionUsed?: boolean;
+  codeExecutionLog?: string;
   error?: string;
 }
 
@@ -79,6 +84,7 @@ export interface StreamTelemetryCallbacks {
   onThoughtChunk?: (thoughtChunk: string, fullThought: string) => void;
   onMetricsUpdate?: (metrics: Partial<StageMetrics>) => void;
   onTokenUsage?: (usage: TokenUsage) => void;
+  onCodeExecution?: (detail: string) => void;
 }
 
 export interface StreamRequestOptions {
@@ -90,6 +96,12 @@ export interface Attachment {
   type: string;
   data: string; // dataUrl / base64
   size?: number;
+  /** Keeps rendered PDF pages tied to their visible source file. */
+  sourceId?: string;
+  sourceName?: string;
+  pageNumber?: number;
+  /** Generated PDF page images are sent to the model but hidden from the attachment list. */
+  generated?: boolean;
 }
 
 export interface SubQuestion {

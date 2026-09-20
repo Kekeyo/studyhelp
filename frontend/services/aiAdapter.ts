@@ -244,6 +244,20 @@ export async function streamMessage(
             fullThought += tText;
             telemetry?.onThoughtChunk?.(tText, fullThought);
           }
+
+          // Gemini returns these parts only after its sandbox has really been
+          // invoked.  Surfacing them makes "code first" observable instead of
+          // merely relying on a prompt instruction.
+          const executableCode = (part as any).executableCode?.code;
+          const codeResult = (part as any).codeExecutionResult;
+          if (executableCode) {
+            telemetry?.onCodeExecution?.(`已执行计算代码：${executableCode.slice(0, 240)}`);
+          }
+          if (codeResult) {
+            const outcome = codeResult.outcome ? `（${codeResult.outcome}）` : '';
+            const output = codeResult.output ? `：${String(codeResult.output).slice(0, 240)}` : '';
+            telemetry?.onCodeExecution?.(`代码运行结果${outcome}${output}`);
+          }
         }
       }
 

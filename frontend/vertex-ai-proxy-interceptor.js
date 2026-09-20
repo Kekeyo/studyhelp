@@ -10,8 +10,8 @@
   const originalFetch = window.fetch;
   const originalWebSocket = window.WebSocket;
   const isGitHubPages = window.location.hostname === 'kekeyo.github.io';
-  const proxyHttpBase = isGitHubPages ? 'http://127.0.0.1:5000' : '';
-  const proxyWsBase = isGitHubPages ? 'ws://127.0.0.1:5000' : '';
+  const proxyHttpBase = isGitHubPages ? 'http://127.0.0.1:5001' : '';
+  const proxyWsBase = isGitHubPages ? 'ws://127.0.0.1:5001' : '';
 
   // Function to validate VertexGenAi endpoints
   function isValidUrl(url) {

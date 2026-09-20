@@ -14,6 +14,8 @@ set "https_proxy=http://127.0.0.1:7890"
 set "no_proxy=localhost,127.0.0.1"
 
 set "NODE_USE_ENV_PROXY=1"
+set "API_BACKEND_HOST=127.0.0.1"
+set "API_BACKEND_PORT=5001"
 
 rem ===== Check project =====
 if not exist "%PROJECT_DIR%\package.json" (
@@ -57,9 +59,9 @@ if errorlevel 1 (
 )
 
 rem ===== Release backend port =====
-echo [INFO] Releasing port 5000...
+echo [INFO] Releasing port 5001...
 
-for %%P in (5000) do (
+for %%P in (5001) do (
     for /f "tokens=5" %%A in ('netstat -ano ^| findstr /R /C:":%%P .*LISTENING"') do (
         taskkill /F /PID %%A >nul 2>&1
     )
@@ -74,7 +76,7 @@ echo.
 echo ========================================
 echo StudyHelp
 echo Website : https://kekeyo.github.io/studyhelp/
-echo Local ADC proxy: http://127.0.0.1:5000/
+echo Local ADC proxy: http://127.0.0.1:5001/
 echo ========================================
 echo.
 

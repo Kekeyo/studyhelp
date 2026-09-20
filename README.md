@@ -113,7 +113,7 @@ GOOGLE_CLOUD_LOCATION=global
 
 ### 3. 安装依赖
 
-在项目根目录执行：
+安装 Node.js 24 或更高版本，然后在项目根目录执行：
 
 ```bash
 npm install
@@ -126,7 +126,7 @@ npm install
 Windows 用户直接双击项目根目录的：
 
 ```text
-StudyHelp.bat
+StudyHelpGit.bat
 ```
 
 脚本会启动本机 Vertex ADC 代理，并自动打开：
@@ -135,7 +135,7 @@ StudyHelp.bat
 https://kekeyo.github.io/studyhelp/
 ```
 
-在右上角设置中选择 **Google Vertex AI (ADC，仅限本地)**，网页会通过 `http://127.0.0.1:5000` 使用这台电脑上的 ADC。
+在右上角设置中选择 **Google Vertex AI (ADC，仅限本地)**，网页会通过 `http://127.0.0.1:5001` 使用这台电脑上的 ADC。
 
 也可以在项目根目录手动启动认证代理：
 
@@ -199,6 +199,8 @@ studyhelp/
 ├── backend/               # 本地 Vertex AI ADC 代理
 ├── .github/workflows/     # GitHub Pages 自动部署
 ├── package.json
+├── StudyHelpGit.bat       # 启动本地 ADC 代理并打开 GitHub Pages
+├── StudyHelp5173.bat      # 启动本地前端与后端开发环境
 └── README.md
 ```
 

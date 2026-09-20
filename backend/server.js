@@ -7,14 +7,14 @@
 import 'dotenv/config';
 import express from 'express';
 import { GoogleAuth } from 'google-auth-library';
-import fetch from 'node-fetch';
+import { Readable } from 'node:stream';
 import rateLimit from 'express-rate-limit';
 import { WebSocketServer, WebSocket } from 'ws';
 
 const app = express();
 app.use(express.json({limit: process?.env?.API_PAYLOAD_MAX_SIZE || "7mb"}));
 
-const PORT = process?.env?.API_BACKEND_PORT || 5000;
+const PORT = process?.env?.API_BACKEND_PORT || 5001;
 const API_BACKEND_HOST = process?.env?.API_BACKEND_HOST || "127.0.0.1";
 
 const GOOGLE_CLOUD_LOCATION = process?.env?.GOOGLE_CLOUD_LOCATION;
@@ -286,9 +286,10 @@ app.post('/api-proxy', async (req, res) => {
         return res.end(JSON.stringify({ error: 'Streaming response body is null' }));
       }
 
+      const responseBody = Readable.fromWeb(apiResponse.body);
       const decoder = new TextDecoder();
       let deltaChunk = '';
-      apiResponse.body.on('data', (encodedChunk) => {
+      responseBody.on('data', (encodedChunk) => {
         if (res.writableEnded) return; // Prevent writing after res.end()
 
         try {
@@ -310,13 +311,13 @@ app.post('/api-proxy', async (req, res) => {
         }
       });
 
-      apiResponse.body.on('end', () => {
+      responseBody.on('end', () => {
         deltaChunk = '';
         console.log(`[Node Proxy] Vertex stream finished and all data processed for ${apiClient.name}`);
         res.end();
       });
 
-      apiResponse.body.on('error', (streamError) => {
+      responseBody.on('error', (streamError) => {
         console.error('[Node Proxy] Error from Vertex stream:', streamError);
         if (!res.writableEnded) {
           res.end(JSON.stringify({ proxyError: 'Stream error from Vertex AI', details: streamError.message }));
@@ -326,9 +327,7 @@ app.post('/api-proxy', async (req, res) => {
       res.on('error', (resError) => {
         console.error('[Node Proxy] Error writing to client response:', resError);
         // The source stream might need to be destroyed if an error occurs here.
-        if (apiResponse.body && typeof apiResponse.body.destroy === 'function') {
-             apiResponse.body.destroy(resError);
-        }
+        responseBody.destroy(resError);
       });
     } else {
       // Non-streaming response handling
@@ -490,4 +489,3 @@ server.on('upgrade', async (request, socket, head) => {
     socket.destroy();
   }
 });
-

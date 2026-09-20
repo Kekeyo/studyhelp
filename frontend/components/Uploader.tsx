@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useId, useState } from 'react';
 import { UploadCloud, X, FileText, FileCode, ZoomIn, Eye, Files } from 'lucide-react';
 import { Attachment } from '../types.ts';
 
@@ -20,9 +20,13 @@ const toDataUrl = (file: File): Promise<string> => new Promise((resolve, reject)
 const dataUrlByteSize = (dataUrl: string) => Math.ceil((dataUrl.length - (dataUrl.indexOf(',') + 1)) * 0.75);
 
 export const Uploader: React.FC<Props> = ({ onFilesAdded, attachments, onRemove }) => {
+  // Signal System, Math One and English One stay mounted while switching tabs.
+  // A fixed DOM id made labels in later tabs open the first (hidden) uploader.
+  const inputId = useId();
   const [isDragging, setIsDragging] = useState(false);
   const [parsingPdf, setParsingPdf] = useState(false);
   const [parsingMessage, setParsingMessage] = useState('');
+  const [uploadError, setUploadError] = useState('');
   const [previewImage, setPreviewImage] = useState<string | null>(null);
 
   const extractPdfText = async (pdf: any): Promise<string> => {
@@ -77,6 +81,7 @@ export const Uploader: React.FC<Props> = ({ onFilesAdded, attachments, onRemove 
   const processFiles = async (files: FileList | File[]) => {
     const newAttachments: Attachment[] = [];
     let accumulatedText = '';
+    setUploadError('');
     setParsingPdf(true);
 
     try {
@@ -111,7 +116,7 @@ export const Uploader: React.FC<Props> = ({ onFilesAdded, attachments, onRemove 
       onFilesAdded(newAttachments, accumulatedText);
     } catch (error) {
       console.error('File processing failed:', error);
-      window.alert(error instanceof Error ? error.message : '附件处理失败，请重试。');
+      setUploadError(error instanceof Error ? error.message : '附件处理失败，请重试。');
     } finally {
       setParsingPdf(false);
       setParsingMessage('');
@@ -124,6 +129,15 @@ export const Uploader: React.FC<Props> = ({ onFilesAdded, attachments, onRemove 
     setIsDragging(false);
     if (event.dataTransfer.files?.length) void processFiles(event.dataTransfer.files);
   }, []);
+
+  // Make a stable Array<File> before clearing the input. Some browsers expose
+  // a live FileList, which becomes empty as soon as input.value is reset and
+  // caused PDF uploads to silently disappear during asynchronous parsing.
+  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const selectedFiles = Array.from(event.target.files || []);
+    event.target.value = '';
+    if (selectedFiles.length) void processFiles(selectedFiles);
+  };
 
   const visibleAttachments = attachments.filter(attachment => !attachment.generated);
 
@@ -141,13 +155,10 @@ export const Uploader: React.FC<Props> = ({ onFilesAdded, attachments, onRemove 
           multiple
           accept=".pdf,.md,.txt,.png,.jpg,.jpeg,.webp"
           className="hidden"
-          id="file-upload-input"
-          onChange={(event) => {
-            if (event.target.files?.length) void processFiles(event.target.files);
-            event.target.value = '';
-          }}
+          id={inputId}
+          onChange={handleFileChange}
         />
-        <label htmlFor="file-upload-input" className="cursor-pointer flex items-center justify-center gap-3">
+        <label htmlFor={inputId} className="cursor-pointer flex items-center justify-center gap-3">
           <div className="p-2 bg-blue-100 text-blue-700 rounded-xl shadow-xs"><UploadCloud size={18} /></div>
           <div className="text-left">
             <p className="text-xs font-semibold text-slate-700">上传整张试卷 PDF / JPG / PNG</p>
@@ -157,6 +168,7 @@ export const Uploader: React.FC<Props> = ({ onFilesAdded, attachments, onRemove 
       </div>
 
       {parsingPdf && <p className="text-xs text-blue-600 mt-2 animate-pulse font-medium">{parsingMessage || '正在准备试卷附件…'}</p>}
+      {uploadError && <p role="alert" className="text-xs text-rose-700 mt-2 font-medium leading-relaxed">PDF 读取失败：{uploadError}</p>}
 
       {visibleAttachments.length > 0 && (
         <div className="mt-3 space-y-2">

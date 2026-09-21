@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { AlertCircle, Check, ChevronDown, Copy, Download, Edit3, FileText, Layers, Play, RotateCcw, Square } from 'lucide-react';
+import { AlertCircle, ArrowUpToLine, Check, ChevronDown, Copy, Download, Edit3, FileText, Layers, Play, RotateCcw, Square } from 'lucide-react';
 import Uploader from '../components/Uploader.tsx';
 import MarkdownRenderer from '../components/MarkdownRenderer.tsx';
 import { Attachment, TaskStatus } from '../types.ts';
@@ -139,7 +139,10 @@ export const MathOne: React.FC = () => {
   const [isEditing, setIsEditing] = useState(false);
   const [editContent, setEditContent] = useState('');
   const [isExportMenuOpen, setIsExportMenuOpen] = useState(false);
+  const [answerScrollTop, setAnswerScrollTop] = useState(0);
   const answerRenderRef = useRef<HTMLDivElement>(null);
+  const answerTopRef = useRef<HTMLDivElement>(null);
+  const answerScrollContainerRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
 
   const isProcessing = status === TaskStatus.DRAFTING;
@@ -295,6 +298,10 @@ export const MathOne: React.FC = () => {
     setIsEditing(previous => !previous);
   };
 
+  const scrollToAnswerTop = () => {
+    answerTopRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
   const leftContent = (
     <div className="w-full h-full flex flex-col gap-3.5 bg-white rounded-2xl shadow-sm border border-slate-200/80 p-4 overflow-y-auto min-h-0">
       <div className="flex items-center justify-between shrink-0">
@@ -349,7 +356,11 @@ export const MathOne: React.FC = () => {
   );
 
   const rightContent = (
-    <div className="w-full h-full min-h-0 flex flex-col gap-4 overflow-y-auto pr-1">
+    <div
+      ref={answerScrollContainerRef}
+      onScroll={(event) => setAnswerScrollTop(event.currentTarget.scrollTop)}
+      className="w-full h-full min-h-0 flex flex-col gap-4 overflow-y-auto pr-1"
+    >
       {!answer && !isProcessing && (
         <div className="flex-1 bg-white rounded-2xl border border-slate-200/80 p-8 flex flex-col items-center justify-center text-center">
           <div className="w-14 h-14 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center mb-3 shadow-xs"><Layers size={26} /></div>
@@ -364,7 +375,7 @@ export const MathOne: React.FC = () => {
 
       {answer && (
         <div className="bg-white rounded-2xl shadow-sm border-2 border-blue-100 p-5 shrink-0">
-          <div className="flex flex-wrap items-center justify-end gap-1.5 border-b border-slate-100 pb-3 mb-4">
+          <div ref={answerTopRef} className="flex flex-wrap items-center justify-end gap-1.5 border-b border-slate-100 pb-3 mb-4">
             <div className="flex items-center gap-1.5">
               <button onClick={handleCopy} className="px-2.5 py-1 text-xs font-medium border border-slate-200 rounded-lg hover:bg-blue-50 transition-colors flex items-center gap-1">
                 {copied ? <Check size={13} className="text-emerald-500" /> : <Copy size={13} />}{copied ? '已复制' : '复制'}
@@ -436,6 +447,20 @@ export const MathOne: React.FC = () => {
             />
             </div>
           )}
+        </div>
+      )}
+
+      {answer && answerScrollTop > 120 && (
+        <div className="sticky bottom-4 right-4 self-end z-40 animate-in fade-in slide-in-from-bottom-3 duration-200">
+          <button
+            type="button"
+            onClick={scrollToAnswerTop}
+            className="bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold px-3.5 py-2 rounded-xl shadow-lg hover:shadow-xl transition-all flex items-center gap-1.5"
+            title="返回解答顶部（复制、编辑、导出）"
+          >
+            <ArrowUpToLine size={13} />
+            <span>解答顶部（复制/编辑/导出）</span>
+          </button>
         </div>
       )}
     </div>

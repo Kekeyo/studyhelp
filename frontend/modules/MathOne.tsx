@@ -20,6 +20,22 @@ const MATH_SPLIT_PROMPT = `你正在为一份中国考研《数学一》试卷�
 
 pages 是从 1 开始的试卷页码。text 只能用作定位提示，绝对不要转写完整题干、选项或推导；这样可以确保整卷题号不会在队列生成时被截断。图片文字无法完全辨认时，仍须按可见题号建立对象，并把 text 写成简短的可辨认提示，不要凭空杜撰。`;
 
+/**
+ * One-page indexing avoids the multimodal model dropping the back half of a
+ * long paper while it is trying to inspect every page in a single request.
+ */
+const MATH_PAGE_INDEX_PROMPT = `你正在为考研数学一试卷建立后台题号索引。当前只给你一页试卷图，请从页面顶部读到底部，找出本页承载的每一道原卷题目。
+
+选择题、填空题、解答题各算一道；同一道解答题的 (1)、(2) 小问不要单独编号。如果一道题从上一页延续到本页，也要列出它的原卷题号。绝不能忽略页面底部的题目。
+
+只返回合法 JSON 数组，不能有任何说明或 Markdown：
+[
+  {"id":"17","text":"不超过 20 字的题目定位提示"},
+  {"id":"18","text":"不超过 20 字的题目定位提示"}
+]
+
+id 必须是试卷印刷的阿拉伯数字题号，text 只是定位提示，不要转写完整题干。`;
+
 const MATH_QUESTION_PROMPT = `你是一名严谨的中国考研《数学一》名师。现在只需要完成下面这一道题，不能回答其他题，也不能写前言、题目复述、处理过程、阶段说明或代码。
 
 在写出任何解答前，必须先在可用的代码执行工具中计算或核验本题：优先使用 sympy、numpy 或 mpmath 进行代数化简、积分、矩阵运算、数值代回、边界检查等。代码执行仅供内部核验，绝对不要在最终文字中提及代码、工具或运行记录。
@@ -148,12 +164,81 @@ const attachmentsForQuestion = (attachments: Attachment[], question: PaperQuesti
   return attachments.filter((attachment) => {
     if (!attachment.type.startsWith('image/')) return false;
     // Directly uploaded images may contain a whole paper, so they always stay
-    // available. Rendered PDF pages are narrowed to this question when known.
-    return !attachment.generated || pageSet.size === 0 || pageSet.has(attachment.pageNumber ?? -1);
+    // available. Include adjacent rendered pages for a question that crosses a
+    // PDF page break, while avoiding the full-paper context on every request.
+    return !attachment.generated
+      || pageSet.size === 0
+      || [...pageSet].some((page) => Math.abs((attachment.pageNumber ?? -1) - page) <= 1);
   });
 };
 
 const appendAnswer = (completed: string, current: string): string => completed ? `${completed}\n\n${current}` : current;
+
+const questionIdSortValue = (id: string): number => {
+  const numeric = Number(id.replace(/[^0-9]/g, ''));
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : Number.MAX_SAFE_INTEGER;
+};
+
+const buildQueueFromPdfPages = async (
+  attachments: Attachment[],
+  controller: AbortController,
+  config: ReturnType<typeof loadStoredProviderConfig>
+): Promise<PaperQuestion[]> => {
+  const pages = attachments
+    .filter((attachment) => attachment.generated && attachment.type.startsWith('image/') && Number.isInteger(attachment.pageNumber))
+    .sort((left, right) => (left.pageNumber ?? 0) - (right.pageNumber ?? 0));
+
+  if (pages.length === 0) return [];
+
+  const indexedQuestions = new Map<string, PaperQuestion>();
+  for (const page of pages) {
+    const pageNumber = page.pageNumber as number;
+    let pageOutput = '';
+    let pageError: unknown;
+
+    // Index pages one after another to be gentle with rate limits and make a
+    // temporary provider failure recoverable instead of silently losing a page.
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      let partialPageOutput = '';
+      try {
+        pageOutput = await streamMessage(
+          `${MATH_PAGE_INDEX_PROMPT}\n\n当前是原卷第 ${pageNumber} 页。`,
+          [page],
+          (_delta, full) => { partialPageOutput = full; },
+          controller.signal,
+          config
+        );
+        break;
+      } catch (error) {
+        if (controller.signal.aborted || !isRecoverableStreamError(error)) throw error;
+        if (parsePaperQuestions(partialPageOutput).length > 0) {
+          pageOutput = partialPageOutput;
+          break;
+        }
+        pageError = error;
+        if (attempt < 3) await waitBeforeRetry(1500 * (attempt + 1), controller.signal);
+      }
+    }
+    if (!pageOutput) throw pageError || new Error(`第 ${pageNumber} 页题号读取失败。`);
+
+    const pageQuestions = parsePaperQuestions(pageOutput);
+    if (pageQuestions.length === 0) throw new Error(`第 ${pageNumber} 页没有识别到题号，未开始解答以避免漏题。`);
+
+    for (const question of pageQuestions) {
+      const existing = indexedQuestions.get(question.id);
+      if (existing) {
+        if (!existing.pages.includes(pageNumber)) existing.pages.push(pageNumber);
+        if (existing.text.startsWith('试卷中的第') && question.text) existing.text = question.text;
+      } else {
+        indexedQuestions.set(question.id, { ...question, pages: [pageNumber] });
+      }
+    }
+  }
+
+  return [...indexedQuestions.values()]
+    .map((question) => ({ ...question, pages: question.pages.sort((left, right) => left - right) }))
+    .sort((left, right) => questionIdSortValue(left.id) - questionIdSortValue(right.id));
+};
 
 export const MathOne: React.FC = () => {
   const [textInput, setTextInput] = useState('');
@@ -207,39 +292,41 @@ export const MathOne: React.FC = () => {
 
     const sourceText = textInput || '无可用文字层，请完全根据上传的试卷页面图片识别。';
     try {
-      // The queue is deliberately invisible: splitting the paper here keeps a
-      // single answer request small enough to finish, while the reader sees one
-      // ordinary, continuous answer document rather than a multi-question UI.
-      let queueOutput = '';
-      let queueError: unknown;
-      for (let attempt = 0; attempt < 4; attempt += 1) {
-        let partialQueueOutput = '';
-        try {
-          queueOutput = await streamMessage(
-            `${MATH_SPLIT_PROMPT}\n\n试卷文本（扫描件以上传的页面图片为准）：\n${sourceText}`,
-            attachments,
-            (_delta, full) => { partialQueueOutput = full; },
-            controller.signal,
-            config
-          );
-          break;
-        } catch (error) {
-          if (controller.signal.aborted || !isRecoverableStreamError(error)) throw error;
-          // A complete queue can arrive before a malformed final stream segment.
-          // Use it directly instead of throwing away an otherwise valid paper map.
-          if (parsePaperQuestions(partialQueueOutput).length > 0) {
-            queueOutput = partialQueueOutput;
+      // PDF pages are indexed separately. A single all-page multimodal request
+      // often recognises the opening questions but loses the back half (for
+      // example stopping at question 16), so it is only a fallback for a plain
+      // pasted text question or one directly uploaded image.
+      let questions = await buildQueueFromPdfPages(attachments, controller, config);
+      if (questions.length === 0) {
+        let queueOutput = '';
+        let queueError: unknown;
+        for (let attempt = 0; attempt < 4; attempt += 1) {
+          let partialQueueOutput = '';
+          try {
+            queueOutput = await streamMessage(
+              `${MATH_SPLIT_PROMPT}\n\n试卷文本（扫描件以上传的页面图片为准）：\n${sourceText}`,
+              attachments,
+              (_delta, full) => { partialQueueOutput = full; },
+              controller.signal,
+              config
+            );
             break;
+          } catch (error) {
+            if (controller.signal.aborted || !isRecoverableStreamError(error)) throw error;
+            if (parsePaperQuestions(partialQueueOutput).length > 0) {
+              queueOutput = partialQueueOutput;
+              break;
+            }
+            queueError = error;
+            if (attempt < 3) await waitBeforeRetry(1500 * (attempt + 1), controller.signal);
           }
-          queueError = error;
-          if (attempt < 3) await waitBeforeRetry(1500 * (attempt + 1), controller.signal);
         }
+        if (!queueOutput) throw queueError || new Error('无法读取整卷题目。');
+        questions = parsePaperQuestions(queueOutput);
       }
-      if (!queueOutput) throw queueError || new Error('无法读取整卷题目。');
 
-      const questions = parsePaperQuestions(queueOutput);
-      // A model can occasionally refuse the JSON-only request. Retain the old
-      // whole-paper fallback so an otherwise readable upload is never discarded.
+      // A non-PDF image can only be indexed as a whole. The rendered-PDF path
+      // above never accepts an incomplete page index as a completed paper.
       const queue = questions.length > 0
         ? questions
         : [{ id: '1', text: sourceText, pages: [] }];

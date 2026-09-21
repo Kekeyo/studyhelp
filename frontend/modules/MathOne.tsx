@@ -7,55 +7,25 @@ import { loadStoredProviderConfig, streamMessage } from '../services/aiAdapter.t
 import { exportRenderedPdf } from '../utils/pdfExporter.ts';
 import { ResizableSplitPane } from '../components/ResizableSplitPane.tsx';
 
-/** An internal-only extraction request. Its response is never rendered. */
-const MATH_SPLIT_PROMPT = `你正在为一份中国考研《数学一》试卷建立后台解题队列。请阅读提供的文本和试卷页面图片，识别试卷中的每一道独立大题，并严格保持原始顺序。
+const PAPER_COMPLETE_MARKER = '[[PAPER_COMPLETE]]';
 
-选择题、填空题和解答题都各算一道题；一道解答题内的 (1)、(2) 等小问必须保留在同一个题目对象中，不能拆开。题目跨页时 pages 要列出所有相关页。必须覆盖整卷，不能只返回前几题，也不要输出任何解释、Markdown 或代码围栏。
+/** The paper is solved directly in its original order; this is not a splitting or indexing prompt. */
+const MATH_DIRECT_PAPER_PROMPT = `你是一名严谨的中国考研《数学一》名师。请直接阅读随附的整张/整卷试卷，从第一页的第 1 题开始，严格按照原卷顺序连续完成全部题目。不要先拆题、检索题号、定位页码、建立目录、输出处理阶段或向用户提问；看见试卷后就直接开始做题。
 
-只返回合法 JSON 数组，格式严格如下：
-[
-  {"id":"1","text":"最多 20 个字的定位提示，例如：函数极限选择题","pages":[1]},
-  {"id":"2","text":"最多 20 个字的定位提示，例如：二重积分计算题","pages":[1,2]}
-]
+每道题在写答案前都必须优先使用可用的代码执行工具进行内部计算或核验：可用 sympy、numpy、mpmath 做代数化简、积分、矩阵运算、数值代回和边界检查。代码和工具调用只用于内部核验，最终文字绝不能提及代码、工具或运行记录。
 
-pages 是从 1 开始的试卷页码。text 只能用作定位提示，绝对不要转写完整题干、选项或推导；这样可以确保整卷题号不会在队列生成时被截断。图片文字无法完全辨认时，仍须按可见题号建立对象，并把 text 写成简短的可辨认提示，不要凭空杜撰。`;
+每题都必须完整写出题目条件、选项（如有）和全部小问，再给出严谨、可抄写的详细过程；不要跳题，不要只做前半卷，也不要用省略号代替题干或推导。图片、图形、表格或选项确实无法辨认时，要如实说明具体缺失处，不能猜测。
 
-/**
- * One-page indexing avoids the multimodal model dropping the back half of a
- * long paper while it is trying to inspect every page in a single request.
- */
-const MATH_PAGE_INDEX_PROMPT = `你正在为考研数学一试卷建立后台题号索引。当前只给你一页试卷图，请从页面顶部读到底部，找出本页承载的每一道原卷题目。
+排版按普通数学讲义：每题以原卷题号直接开始，例如 ## 1.；不要写“解：”或“解答：”。短公式放在说明所在段内，用单个 $...$。只有较长的分式推导、积分、极限、矩阵计算或完整等式链才单独占行，使用 $$...$$ 且前后各空一行。不要使用 \\begin{aligned}、\\begin{cases}、& 或 \\\\ 等多行 LaTeX 写法。每题最后一行用 **答：** 写出明确结果。
 
-选择题、填空题、解答题各算一道；同一道解答题的 (1)、(2) 小问不要单独编号。如果一道题从上一页延续到本页，也要列出它的原卷题号。绝不能忽略页面底部的题目。
+如果一次输出因长度、上下文或网络中断而未完成，下一次会要求你从断处继续；那时只接着写余下内容，绝不重复已完成内容。只有确认整卷最后一题已经完成后，才在最后单独输出 ${PAPER_COMPLETE_MARKER}。在此之前绝不能输出该标记。`;
 
-只返回合法 JSON 数组，不能有任何说明或 Markdown：
-[
-  {"id":"17","text":"不超过 20 字的题目定位提示"},
-  {"id":"18","text":"不超过 20 字的题目定位提示"}
-]
+const formatMathPaperAnswer = (raw: string): string => raw
+  .replace(/\r/g, '')
+  .replaceAll(PAPER_COMPLETE_MARKER, '')
+  .trim();
 
-id 必须是试卷印刷的阿拉伯数字题号，text 只是定位提示，不要转写完整题干。若本页确定只是封面、目录或说明且没有任何题号，返回 []。`;
-
-const MATH_QUESTION_PROMPT = `你是一名严谨的中国考研《数学一》名师。现在只需要完成下面这一道题，不能回答其他题，也不能写前言、题目复述、处理过程、阶段说明或代码。
-
-在写出任何解答前，必须先在可用的代码执行工具中计算或核验本题：优先使用 sympy、numpy 或 mpmath 进行代数化简、积分、矩阵运算、数值代回、边界检查等。代码执行仅供内部核验，绝对不要在最终文字中提及代码、工具或运行记录。
-
-解答必须严谨且可抄写：补足关键推导，不要只给结论；数值结果要代回或交叉检查。图片、图形、表格或选项不清楚时必须明确这一点，不能猜测。
-
-排版必须严格按普通数学讲义书写：
-1. 直接从推导正文开始，不要写“解：”或“解答：”，也不要写题号。
-2. 题设、定义、偏导数等短公式必须留在说明文字所在段内，使用单个 $...$；不要为了公式而换行。例如：分别计算偏导数：$F_x=1$，$F_y=-\mathrm{e}^{y+az}$。
-3. 只有较长的分式推导、积分、极限、矩阵计算，或一整条较长的等式链才单独成行。独立公式的 $$ 必须各自占一行，前后各空一行。
-4. 不要使用 \\begin{aligned}、\\begin{cases}、&、\\\\ 或任何多行 LaTeX 环境；每个独立公式只写一条普通公式，防止源码泄露。
-5. 每个逻辑步骤只写一个自然段；不要把每句说明都另起一行。最后一行以 **答：** 给出明确结果。
-
-输出只能是本题的解答正文。不要输出题号；题号会由页面统一添加。`;
-
-interface PaperQuestion {
-  id: string;
-  text: string;
-  pages: number[];
-}
+const paperIsComplete = (raw: string): boolean => raw.includes(PAPER_COMPLETE_MARKER);
 
 const createClipboardAttachment = (file: File): Promise<Attachment> => new Promise((resolve, reject) => {
   const reader = new FileReader();
@@ -70,71 +40,15 @@ const createClipboardAttachment = (file: File): Promise<Attachment> => new Promi
   reader.readAsDataURL(file);
 });
 
-/** Extract the first JSON array without trusting optional Markdown fences. */
-const parsePaperQuestions = (raw: string): PaperQuestion[] => {
-  const start = raw.indexOf('[');
-  if (start < 0) return [];
-
-  let inString = false;
-  let escaped = false;
-  let depth = 0;
-  for (let index = start; index < raw.length; index += 1) {
-    const char = raw[index];
-    if (inString) {
-      if (escaped) escaped = false;
-      else if (char === '\\') escaped = true;
-      else if (char === '"') inString = false;
-      continue;
-    }
-    if (char === '"') inString = true;
-    else if (char === '[') depth += 1;
-    else if (char === ']') {
-      depth -= 1;
-      if (depth !== 0) continue;
-      try {
-        const parsed = JSON.parse(raw.slice(start, index + 1));
-        if (!Array.isArray(parsed)) return [];
-        return parsed
-          .map((item, itemIndex): PaperQuestion | null => {
-            if (!item || typeof item !== 'object') return null;
-            const pages = Array.isArray(item.pages)
-              ? item.pages.map(Number).filter(page => Number.isInteger(page) && page > 0)
-              : [];
-            const id = String(item.id ?? itemIndex + 1).trim();
-            if (!id) return null;
-            const text = typeof item.text === 'string' && item.text.trim()
-              ? item.text.trim()
-              : `试卷中的第 ${id} 题`;
-            return { id, text, pages: [...new Set(pages)] };
-          })
-          .filter((item): item is PaperQuestion => item !== null);
-      } catch {
-        return [];
-      }
-    }
+const appendAnswer = (completed: string, current: string): string => {
+  if (!completed) return current;
+  if (!current || completed.endsWith('\n') || current.startsWith('\n')) return completed + current;
+  // Preserve a mid-sentence or mid-formula continuation. Add spacing only
+  // when one fully answered question is immediately followed by the next one.
+  if (/\*\*答：\*\*[^\n]*$/.test(completed) && /^#{1,6}\s/.test(current)) {
+    return completed + '\n\n' + current;
   }
-  return [];
-};
-
-/** Keep a one-question model response in the same written-paper format every time. */
-const formatSingleQuestionAnswer = (raw: string, questionNumber: number): string => {
-  let body = raw.replace(/\r/g, '').trim();
-  // A model occasionally repeats a heading despite being told not to. Remove
-  // only the first line so subparts such as (1) and (2) remain untouched.
-  body = body.replace(/^\s*(?:#{1,6}\s*)?(?:第\s*)?\d+\s*(?:题)?[.、．]?\s*/, '');
-  body = body.replace(/^(?:\*\*)?解(?:答)?[：:]?(?:\*\*)?\s*/, '');
-  body = body.replace(/(^|\n)\s*(?:\*\*)?答[：:]?(?:\*\*)?\s*/gm, '$1**答：** ');
-  return `## ${questionNumber}.${body.trim()}`;
-};
-
-const hasFinalAnswer = (raw: string): boolean => /(?:^|\n)\s*(?:\*\*)?答[：:]/m.test(raw);
-
-const looksCutOff = (raw: string): boolean => {
-  const compact = raw.trim();
-  if (!compact) return true;
-  const displayMathMarkers = compact.match(/\$\$/g)?.length ?? 0;
-  if (displayMathMarkers % 2 !== 0) return true;
-  return /(?:[=+\-*/≤≥<>，,;:：]|\\[a-zA-Z]+|[（(\[{])\s*$/u.test(compact);
+  return completed + current;
 };
 
 const isRecoverableStreamError = (error: unknown): boolean => {
@@ -158,122 +72,6 @@ const waitBeforeRetry = (milliseconds: number, signal: AbortSignal): Promise<voi
   }, milliseconds);
   signal.addEventListener('abort', onAbort, { once: true });
 });
-
-const attachmentsForQuestion = (attachments: Attachment[], question: PaperQuestion): Attachment[] => {
-  const pageSet = new Set(question.pages);
-  return attachments.filter((attachment) => {
-    if (!attachment.type.startsWith('image/')) return false;
-    // Directly uploaded images may contain a whole paper, so they always stay
-    // available. Include adjacent rendered pages for a question that crosses a
-    // PDF page break, while avoiding the full-paper context on every request.
-    return !attachment.generated
-      || pageSet.size === 0
-      || [...pageSet].some((page) => Math.abs((attachment.pageNumber ?? -1) - page) <= 1);
-  });
-};
-
-const appendAnswer = (completed: string, current: string): string => completed ? `${completed}\n\n${current}` : current;
-
-const extractPdfPageText = (sourceText: string, pageNumber: number): string => {
-  const header = `--- 第 ${pageNumber} 页 ---`;
-  const start = sourceText.indexOf(header);
-  if (start < 0) return '';
-  const pageStart = start + header.length;
-  const nextPage = sourceText.indexOf('--- 第 ', pageStart);
-  return sourceText.slice(pageStart, nextPage < 0 ? undefined : nextPage).trim();
-};
-
-const questionIdSortValue = (id: string): number => {
-  const numeric = Number(id.replace(/[^0-9]/g, ''));
-  return Number.isFinite(numeric) && numeric > 0 ? numeric : Number.MAX_SAFE_INTEGER;
-};
-
-const buildQueueFromPdfPages = async (
-  attachments: Attachment[],
-  controller: AbortController,
-  config: ReturnType<typeof loadStoredProviderConfig>,
-  sourceText: string
-): Promise<PaperQuestion[]> => {
-  const pages = attachments
-    .filter((attachment) => attachment.generated && attachment.type.startsWith('image/') && Number.isInteger(attachment.pageNumber))
-    .sort((left, right) => (left.pageNumber ?? 0) - (right.pageNumber ?? 0));
-
-  if (pages.length === 0) return [];
-
-  const indexedQuestions = new Map<string, PaperQuestion>();
-  for (const page of pages) {
-    const pageNumber = page.pageNumber as number;
-    const pageText = extractPdfPageText(sourceText, pageNumber);
-    const indexPrompt = `${MATH_PAGE_INDEX_PROMPT}\n\n当前是原卷第 ${pageNumber} 页。${pageText ? `\n\n本页 PDF 文字层（以图片为准）：\n${pageText}` : ''}`;
-    let pageOutput = '';
-    let pageError: unknown;
-
-    // Index pages one after another to be gentle with rate limits and make a
-    // temporary provider failure recoverable instead of silently losing a page.
-    for (let attempt = 0; attempt < 4; attempt += 1) {
-      let partialPageOutput = '';
-      try {
-        pageOutput = await streamMessage(
-          indexPrompt,
-          [page],
-          (_delta, full) => { partialPageOutput = full; },
-          controller.signal,
-          config
-        );
-        break;
-      } catch (error) {
-        if (controller.signal.aborted || !isRecoverableStreamError(error)) throw error;
-        if (parsePaperQuestions(partialPageOutput).length > 0) {
-          pageOutput = partialPageOutput;
-          break;
-        }
-        pageError = error;
-        if (attempt < 3) await waitBeforeRetry(1500 * (attempt + 1), controller.signal);
-      }
-    }
-    if (!pageOutput) throw pageError || new Error(`第 ${pageNumber} 页题号读取失败。`);
-
-    let pageQuestions = parsePaperQuestions(pageOutput);
-    if (pageQuestions.length === 0) {
-      // The first PDF page is often a cover or an exam instruction sheet. Give
-      // it one focused recheck (with text layer when available), then safely
-      // skip it rather than blocking all later question pages.
-      let recheckOutput = '';
-      try {
-        recheckOutput = await streamMessage(
-          `${indexPrompt}\n\n上一轮返回了空数组。请重新从页首到页尾核查：只要有任何印刷题号就必须列出；只有确认本页确实只是封面、目录或说明且没有任何题号时，才返回 []。`,
-          [page],
-          (_delta, full) => { recheckOutput = full; },
-          controller.signal,
-          config
-        );
-      } catch (error) {
-        if (controller.signal.aborted) throw error;
-        // A blank cover page should not make a transient recheck failure stop
-        // the whole paper. Later pages still go through their normal retries.
-        if (!isRecoverableStreamError(error)) throw error;
-      }
-      pageQuestions = parsePaperQuestions(recheckOutput);
-      if (pageQuestions.length === 0) continue;
-    }
-
-    for (const question of pageQuestions) {
-      const existing = indexedQuestions.get(question.id);
-      if (existing) {
-        if (!existing.pages.includes(pageNumber)) existing.pages.push(pageNumber);
-        if (existing.text.startsWith('试卷中的第') && question.text) existing.text = question.text;
-      } else {
-        indexedQuestions.set(question.id, { ...question, pages: [pageNumber] });
-      }
-    }
-  }
-
-  if (indexedQuestions.size === 0) throw new Error('整卷未识别到题号，请检查 PDF 是否为试卷页面。');
-
-  return [...indexedQuestions.values()]
-    .map((question) => ({ ...question, pages: question.pages.sort((left, right) => left - right) }))
-    .sort((left, right) => questionIdSortValue(left.id) - questionIdSortValue(right.id));
-};
 
 export const MathOne: React.FC = () => {
   const [textInput, setTextInput] = useState('');
@@ -316,138 +114,83 @@ export const MathOne: React.FC = () => {
       return;
     }
 
-    const config = loadStoredProviderConfig();
-    const controller = new AbortController();
-    abortControllerRef.current = controller;
+    const wholePaperConfig = loadStoredProviderConfig();
+    const wholePaperController = new AbortController();
+    abortControllerRef.current = wholePaperController;
     setAnswer('');
     setIsEditing(false);
     setIsExportMenuOpen(false);
     setErrorMsg('');
     setStatus(TaskStatus.DRAFTING);
 
-    const sourceText = textInput || '无可用文字层，请完全根据上传的试卷页面图片识别。';
+    const wholePaperText = textInput || '无可用文字层，请完全根据上传的试卷页面图片识别。';
+    const initialWholePaperPrompt = `${MATH_DIRECT_PAPER_PROMPT}\n\n试卷文字（以上传页面图片为准）：\n${wholePaperText}`;
+    const continuationPrompt = (existing: string) => `继续完成同一份考研数学一整卷试卷。不要重新识别、拆分、检索或复述已经完成的题目；从已有答案的最后中断位置直接往下写，按原卷顺序完成剩余题目。原始试卷页面仍在附件中，必须继续内部代码核验。仍按“## 题号.”开头、短公式行内、长公式单独成行、每题 **答：** 结尾的格式输出。只有整卷最后一题完成后才单独输出 ${PAPER_COMPLETE_MARKER}。\n\n已有答案末尾：\n${existing.slice(-8000)}`;
+
     try {
-      // PDF pages are indexed separately. A single all-page multimodal request
-      // often recognises the opening questions but loses the back half (for
-      // example stopping at question 16), so it is only a fallback for a plain
-      // pasted text question or one directly uploaded image.
-      let questions = await buildQueueFromPdfPages(attachments, controller, config, sourceText);
-      if (questions.length === 0) {
-        let queueOutput = '';
-        let queueError: unknown;
-        for (let attempt = 0; attempt < 4; attempt += 1) {
-          let partialQueueOutput = '';
-          try {
-            queueOutput = await streamMessage(
-              `${MATH_SPLIT_PROMPT}\n\n试卷文本（扫描件以上传的页面图片为准）：\n${sourceText}`,
-              attachments,
-              (_delta, full) => { partialQueueOutput = full; },
-              controller.signal,
-              config
-            );
+      let wholePaperOutput = '';
+      let wholePaperComplete = false;
+
+      // The PDF/image is always solved as one original paper. Extra requests
+      // are only invisible continuations after a provider cuts its output;
+      // they never index pages or create a question queue.
+      for (let segment = 0; !wholePaperComplete; segment += 1) {
+        if (wholePaperController.signal.aborted) throw new Error('Aborted');
+
+        const outputBeforeSegment = wholePaperOutput;
+        const prompt = outputBeforeSegment
+          ? continuationPrompt(outputBeforeSegment)
+          : initialWholePaperPrompt;
+        let streamedSegment = '';
+
+        try {
+          const result = await streamMessage(
+            prompt,
+            attachments,
+            (_delta, full) => {
+              streamedSegment = full;
+              setAnswer(formatMathPaperAnswer(appendAnswer(outputBeforeSegment, full)));
+            },
+            wholePaperController.signal,
+            wholePaperConfig,
+            undefined,
+            { enableGoogleCodeExecution: true }
+          );
+          wholePaperOutput = appendAnswer(outputBeforeSegment, result);
+
+          if (paperIsComplete(wholePaperOutput)) {
+            wholePaperComplete = true;
             break;
-          } catch (error) {
-            if (controller.signal.aborted || !isRecoverableStreamError(error)) throw error;
-            if (parsePaperQuestions(partialQueueOutput).length > 0) {
-              queueOutput = partialQueueOutput;
-              break;
-            }
-            queueError = error;
-            if (attempt < 3) await waitBeforeRetry(1500 * (attempt + 1), controller.signal);
           }
+
+          await waitBeforeRetry(700, wholePaperController.signal);
+        } catch (error) {
+          if (wholePaperController.signal.aborted || !isRecoverableStreamError(error)) throw error;
+          if (streamedSegment.trim()) {
+            wholePaperOutput = appendAnswer(outputBeforeSegment, streamedSegment);
+            setAnswer(formatMathPaperAnswer(wholePaperOutput));
+          }
+
+          if (paperIsComplete(wholePaperOutput)) {
+            wholePaperComplete = true;
+            break;
+          }
+
+          await waitBeforeRetry(Math.min(8000, 1500 * (segment + 1)), wholePaperController.signal);
         }
-        if (!queueOutput) throw queueError || new Error('无法读取整卷题目。');
-        questions = parsePaperQuestions(queueOutput);
       }
 
-      // A non-PDF image can only be indexed as a whole. The rendered-PDF path
-      // above never accepts an incomplete page index as a completed paper.
-      const queue = questions.length > 0
-        ? questions
-        : [{ id: '1', text: sourceText, pages: [] }];
-
-      let completedAnswer = '';
-      for (let index = 0; index < queue.length; index += 1) {
-        if (controller.signal.aborted) throw new Error('Aborted');
-
-        const question = queue[index];
-        const questionNumber = index + 1;
-        const relevantAttachments = attachmentsForQuestion(attachments, question);
-        const questionSource = relevantAttachments.length > 0
-          ? `请在随附的试卷页面中定位原卷第 ${question.id} 题；定位提示：${question.text}。只解这一题及其全部小问。`
-          : `当前题目（统一编号为 ${questionNumber}，原卷题号为 ${question.id}，定位提示：${question.text}）：\n${sourceText}`;
-        const questionPrompt = `${MATH_QUESTION_PROMPT}\n\n${questionSource}`;
-        const createContinuationPrompt = (existing: string) => `继续完成同一道考研数学一题。已有回答在中途停止，或尚未给出最终答案。请从最后一句继续，不要重复已有推导、不要输出题号，仍须只输出解答正文，并以 **答：** 给出最终结果。先使用可用代码执行工具核验尚未完成的计算；不要提及代码或工具。\n\n原题：\n${questionSource}\n\n已有解答：\n${existing}`;
-        let questionOutput = '';
-        let completedQuestion = false;
-        let lastStreamError: unknown;
-
-        // A provider may cut an SSE/JSON frame after returning useful text. Keep
-        // that text, wait briefly, then ask for the same question to continue.
-        // The next paper question is never started until this one has an answer.
-        for (let segment = 0; segment < 8; segment += 1) {
-          const outputBeforeSegment = questionOutput;
-          const requestPrompt = outputBeforeSegment
-            ? createContinuationPrompt(outputBeforeSegment)
-            : questionPrompt;
-          let streamedSegment = '';
-
-          try {
-            const result = await streamMessage(
-              requestPrompt,
-              relevantAttachments,
-              (_delta, full) => {
-                streamedSegment = full;
-                const liveOutput = appendAnswer(outputBeforeSegment, full);
-                setAnswer(appendAnswer(completedAnswer, formatSingleQuestionAnswer(liveOutput, questionNumber)));
-              },
-              controller.signal,
-              config,
-              undefined,
-              { enableGoogleCodeExecution: true }
-            );
-            questionOutput = appendAnswer(outputBeforeSegment, result);
-          } catch (error) {
-            if (controller.signal.aborted || !isRecoverableStreamError(error)) throw error;
-            lastStreamError = error;
-            if (streamedSegment.trim()) questionOutput = appendAnswer(outputBeforeSegment, streamedSegment);
-            // Some Vertex proxy responses fail while closing their final SSE
-            // frame even though the model already produced a complete answer.
-            if (hasFinalAnswer(questionOutput) && !looksCutOff(questionOutput)) {
-              completedQuestion = true;
-              break;
-            }
-            if (segment < 7) {
-              await waitBeforeRetry(Math.min(8000, 1500 * (segment + 1)), controller.signal);
-              continue;
-            }
-            break;
-          }
-
-          if (hasFinalAnswer(questionOutput) && !looksCutOff(questionOutput)) {
-            completedQuestion = true;
-            break;
-          }
-        }
-
-        if (!completedQuestion) {
-          throw lastStreamError || new Error(`第 ${questionNumber} 题未能完整写完，请稍后重试。`);
-        }
-
-        completedAnswer = appendAnswer(completedAnswer, formatSingleQuestionAnswer(questionOutput, questionNumber));
-        setAnswer(completedAnswer);
-      }
-
+      setAnswer(formatMathPaperAnswer(wholePaperOutput));
       setStatus(TaskStatus.DONE);
     } catch (error: any) {
-      if (controller.signal.aborted || error?.message === 'Aborted') {
+      if (wholePaperController.signal.aborted || error?.message === 'Aborted') {
         setStatus(TaskStatus.IDLE);
       } else {
         setStatus(TaskStatus.ERROR);
         setErrorMsg(error?.message || '试卷解答失败，请重试。');
       }
     } finally {
-      if (abortControllerRef.current === controller) abortControllerRef.current = null;
+      if (abortControllerRef.current === wholePaperController) abortControllerRef.current = null;
     }
   };
 

@@ -26,9 +26,14 @@ const MATH_QUESTION_PROMPT = `你是一名严谨的中国考研《数学一》�
 
 解答必须严谨且可抄写：补足关键推导，不要只给结论；数值结果要代回或交叉检查。图片、图形、表格或选项不清楚时必须明确这一点，不能猜测。
 
-排版要求：说明文字分段书写。等式、推导链、积分、求和、极限、矩阵、分式、根式或含两个以上运算符的公式必须各自独占一行，并在前后留空行，以 $$...$$ 包裹；不要把长公式塞在段落中，也不要使用代码块。
+排版必须像一份干净的数学讲义，而不是逐行堆砌的草稿：
+1. 直接从第一句推导开始；不要写“解：”“解答：”“答：”“答案：”，也不要写题号。
+2. 同一逻辑步骤的说明写成一个自然段，不要每句话都换行。
+3. 简短定义或一个简单等式可留在句中。只有较长推导链、积分/极限、矩阵、分式计算或需要比较的多行等式才另起公式块。
+4. 相关的连续公式必须合并为同一个 $$\\begin{aligned} ... \\\\ ... \\end{aligned}$$ 公式块，并用 & 对齐；不要把 F_x、F_y、F_z 这类相关短式拆成三个公式块。
+5. 每个逻辑段或公式块之间只留一个空行；不用代码块。最后用一句普通文字给出结论，例如“故选 A。”
 
-输出只能是本题的解答正文，且必须以 **解：** 开始，以 **答：** 给出最终结果结束。不要输出题号；题号会由页面统一添加。`;
+输出只能是本题的解答正文。不要输出题号；题号会由页面统一添加。`;
 
 interface PaperQuestion {
   id: string;
@@ -101,13 +106,14 @@ const formatSingleQuestionAnswer = (raw: string, questionNumber: number): string
   // A model occasionally repeats a heading despite being told not to. Remove
   // only the first line so subparts such as (1) and (2) remain untouched.
   body = body.replace(/^\s*(?:#{1,6}\s*)?(?:第\s*)?\d+\s*(?:题)?[.、．]?\s*/, '');
-  body = body.replace(/^(?:\*\*)?解(?:答)?[：:]?(?:\*\*)?\s*/, '**解：**\n\n');
-  if (!body.startsWith('**解：**')) body = `**解：**\n\n${body}`;
-  body = body.replace(/(^|\n)\s*(?:\*\*)?答[：:]?(?:\*\*)?\s*/gm, '$1**答：** ');
+  // Keep older or noncompliant model responses visually consistent too: only
+  // the numeric heading should frame a solution, never template labels.
+  body = body.replace(/^(?:\*\*)?解(?:答)?[：:]?(?:\*\*)?\s*/, '');
+  body = body.replace(/(^|\n)\s*(?:\*\*)?(?:答|答案)[：:]?(?:\*\*)?\s*/gm, '$1');
   return `## ${questionNumber}.\n\n${body.trim()}`;
 };
 
-const hasFinalAnswer = (raw: string): boolean => /(?:^|\n)\s*(?:\*\*)?答[：:]/m.test(raw);
+const hasClosingConclusion = (raw: string): boolean => /[。！？]\s*$/.test(raw.trim());
 
 const looksCutOff = (raw: string): boolean => {
   const compact = raw.trim();
@@ -220,8 +226,8 @@ export const MathOne: React.FC = () => {
         // Do not silently accept an answer cut off in the middle of a formula
         // or one that never reached its final result. One focused continuation
         // is far safer than letting the next question conceal the truncation.
-        if (!hasFinalAnswer(questionOutput) || looksCutOff(questionOutput)) {
-          const continuationPrompt = `继续完成同一道考研数学一题。下面的已有解答因输出中断或未写完而停止。请从最后一句继续，不要重复已有推导、不要输出题号，仍须只输出解答正文，并以 **答：** 给出最终结果。先使用可用代码执行工具核验尚未完成的计算；不要提及代码或工具。\n\n题目定位：原卷第 ${question.id} 题，${question.text}\n\n已有解答：\n${questionOutput}`;
+        if (!hasClosingConclusion(questionOutput) || looksCutOff(questionOutput)) {
+          const continuationPrompt = `继续完成同一道考研数学一题。下面的已有解答因输出中断或未写完而停止。请从最后一句继续，不要重复已有推导、不要输出题号或“解：/答：”标签，只输出解答正文，并用一句普通的结论结束。先使用可用代码执行工具核验尚未完成的计算；不要提及代码或工具。\n\n题目定位：原卷第 ${question.id} 题，${question.text}\n\n已有解答：\n${questionOutput}`;
           const continuation = await streamMessage(
             continuationPrompt,
             relevantAttachments,
@@ -364,7 +370,7 @@ export const MathOne: React.FC = () => {
           <div ref={answerRenderRef}>
             <MarkdownRenderer
               content={answer}
-              className="prose-p:my-3 prose-ol:my-0 prose-ol:pl-6 prose-li:my-6 prose-li:pl-1"
+              className="math-answer prose-p:my-2 prose-ol:my-0 prose-ol:pl-6 prose-li:my-4 prose-li:pl-1"
             />
           </div>
         </div>

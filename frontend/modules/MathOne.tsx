@@ -26,9 +26,14 @@ const MATH_QUESTION_PROMPT = `你是一名严谨的中国考研《数学一》�
 
 解答必须严谨且可抄写：补足关键推导，不要只给结论；数值结果要代回或交叉检查。图片、图形、表格或选项不清楚时必须明确这一点，不能猜测。
 
-排版要求：说明文字分段书写。等式、推导链、积分、求和、极限、矩阵、分式、根式或含两个以上运算符的公式必须各自独占一行，并在前后留空行，以 $$...$$ 包裹；不要把长公式塞在段落中，也不要使用代码块。
+排版必须严格按普通数学讲义书写：
+1. 直接从推导正文开始，不要写“解：”或“解答：”，也不要写题号。
+2. 题设、定义、偏导数等短公式必须留在说明文字所在段内，使用单个 $...$；不要为了公式而换行。例如：分别计算偏导数：$F_x=1$，$F_y=-\mathrm{e}^{y+az}$。
+3. 只有较长的分式推导、积分、极限、矩阵计算，或一整条较长的等式链才单独成行。独立公式的 $$ 必须各自占一行，前后各空一行。
+4. 不要使用 \\begin{aligned}、\\begin{cases}、&、\\\\ 或任何多行 LaTeX 环境；每个独立公式只写一条普通公式，防止源码泄露。
+5. 每个逻辑步骤只写一个自然段；不要把每句说明都另起一行。最后一行以 **答：** 给出明确结果。
 
-输出只能是本题的解答正文，且必须以 **解：** 开始，以 **答：** 给出最终结果结束。不要输出题号；题号会由页面统一添加。`;
+输出只能是本题的解答正文。不要输出题号；题号会由页面统一添加。`;
 
 interface PaperQuestion {
   id: string;
@@ -101,10 +106,9 @@ const formatSingleQuestionAnswer = (raw: string, questionNumber: number): string
   // A model occasionally repeats a heading despite being told not to. Remove
   // only the first line so subparts such as (1) and (2) remain untouched.
   body = body.replace(/^\s*(?:#{1,6}\s*)?(?:第\s*)?\d+\s*(?:题)?[.、．]?\s*/, '');
-  body = body.replace(/^(?:\*\*)?解(?:答)?[：:]?(?:\*\*)?\s*/, '**解：**\n\n');
-  if (!body.startsWith('**解：**')) body = `**解：**\n\n${body}`;
+  body = body.replace(/^(?:\*\*)?解(?:答)?[：:]?(?:\*\*)?\s*/, '');
   body = body.replace(/(^|\n)\s*(?:\*\*)?答[：:]?(?:\*\*)?\s*/gm, '$1**答：** ');
-  return `## ${questionNumber}.\n\n${body.trim()}`;
+  return `## ${questionNumber}.${body.trim()}`;
 };
 
 const hasFinalAnswer = (raw: string): boolean => /(?:^|\n)\s*(?:\*\*)?答[：:]/m.test(raw);

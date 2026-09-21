@@ -121,6 +121,28 @@ const looksCutOff = (raw: string): boolean => {
   return /(?:[=+\-*/≤≥<>，,;:：]|\\[a-zA-Z]+|[（(\[{])\s*$/u.test(compact);
 };
 
+const isRecoverableStreamError = (error: unknown): boolean => {
+  const message = error instanceof Error ? error.message : String(error);
+  return /incomplete json segment|failed to fetch|network(?:error| request)?|timed? ?out|too many requests|rate limit|resource exhausted|quota|\b429\b|\b5\d\d\b|temporarily unavailable|overloaded/i.test(message);
+};
+
+const waitBeforeRetry = (milliseconds: number, signal: AbortSignal): Promise<void> => new Promise((resolve, reject) => {
+  if (signal.aborted) {
+    reject(new Error('Aborted'));
+    return;
+  }
+
+  const onAbort = () => {
+    window.clearTimeout(timer);
+    reject(new Error('Aborted'));
+  };
+  const timer = window.setTimeout(() => {
+    signal.removeEventListener('abort', onAbort);
+    resolve();
+  }, milliseconds);
+  signal.addEventListener('abort', onAbort, { once: true });
+});
+
 const attachmentsForQuestion = (attachments: Attachment[], question: PaperQuestion): Attachment[] => {
   const pageSet = new Set(question.pages);
   return attachments.filter((attachment) => {
@@ -188,13 +210,32 @@ export const MathOne: React.FC = () => {
       // The queue is deliberately invisible: splitting the paper here keeps a
       // single answer request small enough to finish, while the reader sees one
       // ordinary, continuous answer document rather than a multi-question UI.
-      const queueOutput = await streamMessage(
-        `${MATH_SPLIT_PROMPT}\n\n试卷文本（扫描件以上传的页面图片为准）：\n${sourceText}`,
-        attachments,
-        () => {},
-        controller.signal,
-        config
-      );
+      let queueOutput = '';
+      let queueError: unknown;
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        let partialQueueOutput = '';
+        try {
+          queueOutput = await streamMessage(
+            `${MATH_SPLIT_PROMPT}\n\n试卷文本（扫描件以上传的页面图片为准）：\n${sourceText}`,
+            attachments,
+            (_delta, full) => { partialQueueOutput = full; },
+            controller.signal,
+            config
+          );
+          break;
+        } catch (error) {
+          if (controller.signal.aborted || !isRecoverableStreamError(error)) throw error;
+          // A complete queue can arrive before a malformed final stream segment.
+          // Use it directly instead of throwing away an otherwise valid paper map.
+          if (parsePaperQuestions(partialQueueOutput).length > 0) {
+            queueOutput = partialQueueOutput;
+            break;
+          }
+          queueError = error;
+          if (attempt < 3) await waitBeforeRetry(1500 * (attempt + 1), controller.signal);
+        }
+      }
+      if (!queueOutput) throw queueError || new Error('无法读取整卷题目。');
 
       const questions = parsePaperQuestions(queueOutput);
       // A model can occasionally refuse the JSON-only request. Retain the old
@@ -214,36 +255,61 @@ export const MathOne: React.FC = () => {
           ? `请在随附的试卷页面中定位原卷第 ${question.id} 题；定位提示：${question.text}。只解这一题及其全部小问。`
           : `当前题目（统一编号为 ${questionNumber}，原卷题号为 ${question.id}，定位提示：${question.text}）：\n${sourceText}`;
         const questionPrompt = `${MATH_QUESTION_PROMPT}\n\n${questionSource}`;
-        let questionOutput = await streamMessage(
-          questionPrompt,
-          relevantAttachments,
-          (_delta, full) => {
-            setAnswer(appendAnswer(completedAnswer, formatSingleQuestionAnswer(full, questionNumber)));
-          },
-          controller.signal,
-          config,
-          undefined,
-          { enableGoogleCodeExecution: true }
-        );
+        const createContinuationPrompt = (existing: string) => `继续完成同一道考研数学一题。已有回答在中途停止，或尚未给出最终答案。请从最后一句继续，不要重复已有推导、不要输出题号，仍须只输出解答正文，并以 **答：** 给出最终结果。先使用可用代码执行工具核验尚未完成的计算；不要提及代码或工具。\n\n原题：\n${questionSource}\n\n已有解答：\n${existing}`;
+        let questionOutput = '';
+        let completedQuestion = false;
+        let lastStreamError: unknown;
 
-        // Do not silently accept an answer cut off in the middle of a formula
-        // or one that never reached its final result. One focused continuation
-        // is far safer than letting the next question conceal the truncation.
-        if (!hasFinalAnswer(questionOutput) || looksCutOff(questionOutput)) {
-          const continuationPrompt = `继续完成同一道考研数学一题。下面的已有解答因输出中断或未写完而停止。请从最后一句继续，不要重复已有推导、不要输出题号，仍须只输出解答正文，并以 **答：** 给出最终结果。先使用可用代码执行工具核验尚未完成的计算；不要提及代码或工具。\n\n题目定位：原卷第 ${question.id} 题，${question.text}\n\n已有解答：\n${questionOutput}`;
-          const continuation = await streamMessage(
-            continuationPrompt,
-            relevantAttachments,
-            (_delta, full) => {
-              const extended = `${questionOutput}\n\n${full}`;
-              setAnswer(appendAnswer(completedAnswer, formatSingleQuestionAnswer(extended, questionNumber)));
-            },
-            controller.signal,
-            config,
-            undefined,
-            { enableGoogleCodeExecution: true }
-          );
-          questionOutput = `${questionOutput}\n\n${continuation}`;
+        // A provider may cut an SSE/JSON frame after returning useful text. Keep
+        // that text, wait briefly, then ask for the same question to continue.
+        // The next paper question is never started until this one has an answer.
+        for (let segment = 0; segment < 8; segment += 1) {
+          const outputBeforeSegment = questionOutput;
+          const requestPrompt = outputBeforeSegment
+            ? createContinuationPrompt(outputBeforeSegment)
+            : questionPrompt;
+          let streamedSegment = '';
+
+          try {
+            const result = await streamMessage(
+              requestPrompt,
+              relevantAttachments,
+              (_delta, full) => {
+                streamedSegment = full;
+                const liveOutput = appendAnswer(outputBeforeSegment, full);
+                setAnswer(appendAnswer(completedAnswer, formatSingleQuestionAnswer(liveOutput, questionNumber)));
+              },
+              controller.signal,
+              config,
+              undefined,
+              { enableGoogleCodeExecution: true }
+            );
+            questionOutput = appendAnswer(outputBeforeSegment, result);
+          } catch (error) {
+            if (controller.signal.aborted || !isRecoverableStreamError(error)) throw error;
+            lastStreamError = error;
+            if (streamedSegment.trim()) questionOutput = appendAnswer(outputBeforeSegment, streamedSegment);
+            // Some Vertex proxy responses fail while closing their final SSE
+            // frame even though the model already produced a complete answer.
+            if (hasFinalAnswer(questionOutput) && !looksCutOff(questionOutput)) {
+              completedQuestion = true;
+              break;
+            }
+            if (segment < 7) {
+              await waitBeforeRetry(Math.min(8000, 1500 * (segment + 1)), controller.signal);
+              continue;
+            }
+            break;
+          }
+
+          if (hasFinalAnswer(questionOutput) && !looksCutOff(questionOutput)) {
+            completedQuestion = true;
+            break;
+          }
+        }
+
+        if (!completedQuestion) {
+          throw lastStreamError || new Error(`第 ${questionNumber} 题未能完整写完，请稍后重试。`);
         }
 
         completedAnswer = appendAnswer(completedAnswer, formatSingleQuestionAnswer(questionOutput, questionNumber));

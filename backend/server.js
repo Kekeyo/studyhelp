@@ -73,6 +73,72 @@ const proxyLimiter = rateLimit({
 // Apply the rate limiter to the /api-proxy route before the main proxy logic
 app.use('/api-proxy', proxyLimiter);
 
+/**
+ * Vertex returns streamGenerateContent as a JSON array, but TCP/Undici chunks
+ * have no relationship to JSON-object boundaries. Extract each complete JSON
+ * object and keep only the unfinished suffix for the next data event.
+ */
+function transformVertexJsonStream(response) {
+  const events = [];
+  let cursor = 0;
+
+  const skipSeparators = () => {
+    while (cursor < response.length && /[\s,\[\]]/.test(response[cursor])) cursor += 1;
+    // Accept SSE framing too, in case an upstream endpoint switches formats.
+    if (response.startsWith('data:', cursor)) {
+      cursor += 5;
+      while (cursor < response.length && /\s/.test(response[cursor])) cursor += 1;
+    }
+  };
+
+  while (cursor < response.length) {
+    skipSeparators();
+    if (cursor >= response.length) break;
+
+    // A partial "data:" prefix or JSON value is retained until more bytes
+    // arrive rather than being treated as malformed output.
+    if (response[cursor] !== '{') {
+      return { result: events.join(''), remaining: response.slice(cursor) };
+    }
+
+    const objectStart = cursor;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    let objectEnd = -1;
+
+    for (; cursor < response.length; cursor += 1) {
+      const character = response[cursor];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (character === '\\') escaped = true;
+        else if (character === '"') inString = false;
+        continue;
+      }
+
+      if (character === '"') inString = true;
+      else if (character === '{') depth += 1;
+      else if (character === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          objectEnd = cursor;
+          break;
+        }
+      }
+    }
+
+    if (objectEnd < 0) {
+      return { result: events.join(''), remaining: response.slice(objectStart) };
+    }
+
+    const parsedResponse = JSON.parse(response.slice(objectStart, objectEnd + 1));
+    events.push(`data: ${JSON.stringify(parsedResponse)}\n\n`);
+    cursor = objectEnd + 1;
+  }
+
+  return { result: events.join(''), remaining: '' };
+}
+
 const API_CLIENT_MAP = [
  {
     name: "VertexGenAi:generateContent",
@@ -99,31 +165,7 @@ const API_CLIENT_MAP = [
       return `https://aiplatform.clients6.google.com/${params['version']}/projects/${context.projectId}/locations/${context.region}/publishers/google/models/${params['model']}:streamGenerateContent`;
     },
     isStreaming: true,
-    transformFn: (response) => {
-        let normalizedResponse = response.trim();
-        while (normalizedResponse.startsWith(',') || normalizedResponse.startsWith('[')) {
-          normalizedResponse = normalizedResponse.substring(1).trim();
-        }
-        while (normalizedResponse.endsWith(',') || normalizedResponse.endsWith(']')) {
-          normalizedResponse = normalizedResponse.substring(0, normalizedResponse.length - 1).trim();
-        }
-
-        if (!normalizedResponse.length) {
-          return {result: null, inProgress: false};
-        }
-
-        if (!normalizedResponse.endsWith('}')) {
-          return {result: normalizedResponse, inProgress: true};
-        }
-
-        try {
-          const parsedResponse = JSON.parse(`${normalizedResponse}`);
-          const transformedResponse = `data: ${JSON.stringify(parsedResponse)}\n\n`;
-          return {result: transformedResponse, inProgress: false};
-        } catch (error) {
-          throw new Error(`Failed to parse response: ${error}.`);
-        }
-    },
+    transformFn: transformVertexJsonStream,
   },
 ].map((client) => ({ ...client, patternInfo: parsePattern(client.patternForProxy) }));
 
@@ -269,6 +311,13 @@ app.post('/api-proxy', async (req, res) => {
     // 5. Make the call to the API
     const apiResponse = await fetch(apiUrl, apiFetchOptions);
 
+    // Surface upstream failures as ordinary HTTP errors. Treating an error
+    // body as a successful stream would otherwise make the page appear blank.
+    if (!apiResponse.ok) {
+      const errorBody = await apiResponse.text();
+      return res.status(apiResponse.status).type(apiResponse.headers.get('content-type') || 'application/json').send(errorBody);
+    }
+
     // 6. Respond to the client based on stream type
     if (apiClient.isStreaming) {
       console.log(`[Node Proxy] Sending STREAMING response for ${apiClient.name}`);
@@ -299,11 +348,9 @@ app.post('/api-proxy', async (req, res) => {
             const decodedChunk = decoder.decode(encodedChunk, { stream: true });
             deltaChunk = deltaChunk + decodedChunk;
 
-            const {result, inProgress} = apiClient.transformFn(deltaChunk);
-            if (result && !inProgress) {
-              deltaChunk = '';
-              res.write(new TextEncoder().encode(result));
-            }
+            const {result, remaining} = apiClient.transformFn(deltaChunk);
+            deltaChunk = remaining;
+            if (result) res.write(new TextEncoder().encode(result));
           }
         } catch (error) {
           console.error(`[Node Proxy] Error processing streaming response for ${apiClient.name}`);
@@ -312,6 +359,12 @@ app.post('/api-proxy', async (req, res) => {
       });
 
       responseBody.on('end', () => {
+        if (deltaChunk.trim()) {
+          console.error('[Node Proxy] Vertex stream ended with an incomplete JSON response.');
+          if (!res.writableEnded) {
+            res.write(`data: ${JSON.stringify({ error: 'Vertex stream ended before a complete response was received.' })}\n\n`);
+          }
+        }
         deltaChunk = '';
         console.log(`[Node Proxy] Vertex stream finished and all data processed for ${apiClient.name}`);
         res.end();

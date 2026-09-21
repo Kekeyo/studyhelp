@@ -34,6 +34,17 @@ function preprocessMath(raw: string): string {
     .replace(/\\\(\s*/g, '$')
     .replace(/\s*\\\)/g, '$');
 
+  // A model occasionally writes a display environment after a sentence, for
+  // example "代入可得： $$\\begin{aligned}...". remark-math only recognises
+  // $$ blocks on their own lines, so normalize those broken delimiters before
+  // rendering instead of leaking raw LaTeX to the page.
+  const multilineEnvironment = '(?:aligned|alignedat|cases|matrix|pmatrix|bmatrix|vmatrix|Vmatrix|smallmatrix)';
+  const misplacedOpening = new RegExp(`([^\\n])\\s*\\$\\$\\s*(\\\\begin\\{${multilineEnvironment}\\})`, 'g');
+  const misplacedClosing = new RegExp(`(\\\\end\\{${multilineEnvironment}\\})\\s*\\$\\$[ \\t]*([^\\n])`, 'g');
+  text = text
+    .replace(misplacedOpening, (_match, prefix: string, environment: string) => `${prefix}\n\n$$\n${environment}`)
+    .replace(misplacedClosing, (_match, environment: string, suffix: string) => `${environment}\n$$\n\n${suffix}`);
+
   return text;
 }
 

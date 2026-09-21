@@ -432,7 +432,7 @@ export const MathOne: React.FC = () => {
                 <div className="text-xs font-semibold text-slate-400 mb-1.5">实时渲染预览</div>
                 <MarkdownRenderer
                   content={editContent}
-                  className="prose-p:my-3 prose-ol:my-0 prose-ol:pl-6 prose-li:my-6 prose-li:pl-1"
+                  className="math-answer prose-p:my-2 prose-ol:my-0 prose-ol:pl-6 prose-li:my-4 prose-li:pl-1"
                 />
               </div>
             </div>

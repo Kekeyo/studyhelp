@@ -1,7 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { 
   Play, Square, Download, CheckCircle2, AlertCircle, Loader2, Copy, 
-  Check, FileText, Sparkles, ChevronDown, Award
+  Check, FileText, Sparkles, ChevronDown, Award, Edit3
 } from 'lucide-react';
 import Uploader from '../components/Uploader.tsx';
 import MarkdownRenderer from '../components/MarkdownRenderer.tsx';
@@ -88,6 +88,12 @@ export const EnglishOne: React.FC = () => {
   const [errorMsg, setErrorMsg] = useState('');
   const [copied1, setCopied1] = useState(false);
   const [copied2, setCopied2] = useState(false);
+  const [isEditing1, setIsEditing1] = useState(false);
+  const [isEditing2, setIsEditing2] = useState(false);
+  const [editContent1, setEditContent1] = useState('');
+  const [editContent2, setEditContent2] = useState('');
+  const [isExportMenuOpen1, setIsExportMenuOpen1] = useState(false);
+  const [isExportMenuOpen2, setIsExportMenuOpen2] = useState(false);
 
   const renderRef1 = useRef<HTMLDivElement>(null);
   const renderRef2 = useRef<HTMLDivElement>(null);
@@ -148,6 +154,10 @@ export const EnglishOne: React.FC = () => {
     }
 
     setErrorMsg('');
+    setIsEditing1(false);
+    setIsEditing2(false);
+    setIsExportMenuOpen1(false);
+    setIsExportMenuOpen2(false);
     setResult({
       detectedMode: EnglishMode.MODE_A,
       detectedType: '',
@@ -222,14 +232,33 @@ export const EnglishOne: React.FC = () => {
     }
   };
 
-  const handleExportTxt = (content: string, filename: string) => {
-    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+  const handleExportMarkdown = (content: string, filename: string) => {
+    const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
     a.download = filename;
     a.click();
     URL.revokeObjectURL(url);
+  };
+
+  const toggleEditing = (version: 1 | 2) => {
+    if (version === 1) {
+      if (isEditing1) {
+        setResult(previous => ({ ...previous, version1: editContent1 }));
+      } else {
+        setEditContent1(result.version1);
+      }
+      setIsEditing1(previous => !previous);
+      return;
+    }
+
+    if (isEditing2) {
+      setResult(previous => ({ ...previous, version2: editContent2 }));
+    } else {
+      setEditContent2(result.version2);
+    }
+    setIsEditing2(previous => !previous);
   };
 
   // Safe copy helper with fallback to document.execCommand('copy')
@@ -385,24 +414,68 @@ export const EnglishOne: React.FC = () => {
                 <span>{copied1 ? '已复制' : '复制'}</span>
               </button>
               <button
-                onClick={() => handleExportTxt(result.version1, '考研英语_第一版.txt')}
-                className="px-2 py-0.5 text-xs border rounded-lg hover:bg-slate-50 text-slate-600 flex items-center gap-1"
+                onClick={() => toggleEditing(1)}
+                className={`px-2 py-0.5 text-xs border rounded-lg transition-colors flex items-center gap-1 ${
+                  isEditing1
+                    ? 'bg-blue-600 text-white border-blue-600'
+                    : 'hover:bg-slate-50 hover:text-blue-600 text-slate-600'
+                }`}
+                title="在线编辑第一版内容"
               >
-                <Download size={12} />
-                <span>导出 TXT</span>
+                <Edit3 size={12} />
+                <span>{isEditing1 ? '保存预览' : '编辑'}</span>
               </button>
-              <button
-                onClick={() => exportRenderedPdf('考研英语第一版作文评估与精修', renderRef1.current, result.version1)}
-                className="px-2 py-0.5 text-xs border rounded-lg hover:bg-slate-50 text-slate-600 flex items-center gap-1"
-              >
-                <FileText size={12} />
-                <span>导出 PDF</span>
-              </button>
+              <div className="relative">
+                <button
+                  onClick={() => setIsExportMenuOpen1(previous => !previous)}
+                  className="px-2 py-0.5 text-xs border rounded-lg hover:bg-slate-50 hover:text-blue-600 text-slate-600 transition-colors flex items-center gap-1"
+                  aria-haspopup="menu"
+                  aria-expanded={isExportMenuOpen1}
+                  title="导出第一版内容"
+                >
+                  <Download size={12} />
+                  <span>导出</span>
+                  <ChevronDown size={12} className={`transition-transform ${isExportMenuOpen1 ? 'rotate-180' : ''}`} />
+                </button>
+                {isExportMenuOpen1 && (
+                  <div className="absolute right-0 top-full z-10 mt-1.5 w-32 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 shadow-lg" role="menu">
+                    <button
+                      onClick={() => { handleExportMarkdown(result.version1, '考研英语_第一版.md'); setIsExportMenuOpen1(false); }}
+                      className="w-full px-3 py-2 text-left text-xs font-medium text-slate-700 hover:bg-blue-50 hover:text-blue-600 flex items-center gap-2"
+                      role="menuitem"
+                    >
+                      <FileText size={13} />导出 .md
+                    </button>
+                    <button
+                      onClick={() => { exportRenderedPdf('考研英语第一版作文评估与精修', renderRef1.current, result.version1); setIsExportMenuOpen1(false); }}
+                      className="w-full px-3 py-2 text-left text-xs font-medium text-slate-700 hover:bg-blue-50 hover:text-blue-600 flex items-center gap-2"
+                      role="menuitem"
+                    >
+                      <Download size={13} />导出 PDF
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
-          <div ref={renderRef1}>
-            <MarkdownRenderer content={result.version1} />
-          </div>
+          {isEditing1 ? (
+            <div className="space-y-3">
+              <textarea
+                value={editContent1}
+                onChange={(event) => setEditContent1(event.target.value)}
+                className="w-full h-80 p-3.5 text-xs font-mono bg-slate-50 border border-blue-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:bg-white outline-none"
+                aria-label="编辑第一版内容"
+              />
+              <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200">
+                <div className="text-xs font-semibold text-slate-400 mb-1.5">实时渲染预览</div>
+                <MarkdownRenderer content={editContent1} />
+              </div>
+            </div>
+          ) : (
+            <div ref={renderRef1}>
+              <MarkdownRenderer content={result.version1} />
+            </div>
+          )}
         </div>
       )}
 
@@ -423,24 +496,68 @@ export const EnglishOne: React.FC = () => {
                 <span>{copied2 ? '已复制' : '复制'}</span>
               </button>
               <button
-                onClick={() => handleExportTxt(result.version2, '考研英语_高分升级版.txt')}
-                className="px-2 py-0.5 text-xs border rounded-lg hover:bg-blue-50 text-slate-600 flex items-center gap-1"
+                onClick={() => toggleEditing(2)}
+                className={`px-2 py-0.5 text-xs border rounded-lg transition-colors flex items-center gap-1 ${
+                  isEditing2
+                    ? 'bg-blue-600 text-white border-blue-600'
+                    : 'hover:bg-blue-50 hover:text-blue-600 text-slate-600'
+                }`}
+                title="在线编辑高分版本内容"
               >
-                <Download size={12} />
-                <span>导出 TXT</span>
+                <Edit3 size={12} />
+                <span>{isEditing2 ? '保存预览' : '编辑'}</span>
               </button>
-              <button
-                onClick={() => exportRenderedPdf('考研英语高分重写升级版作文', renderRef2.current, result.version2)}
-                className="px-2 py-0.5 text-xs border rounded-lg hover:bg-blue-50 text-slate-600 flex items-center gap-1"
-              >
-                <FileText size={12} />
-                <span>导出 PDF</span>
-              </button>
+              <div className="relative">
+                <button
+                  onClick={() => setIsExportMenuOpen2(previous => !previous)}
+                  className="px-2 py-0.5 text-xs border rounded-lg hover:bg-blue-50 hover:text-blue-600 text-slate-600 transition-colors flex items-center gap-1"
+                  aria-haspopup="menu"
+                  aria-expanded={isExportMenuOpen2}
+                  title="导出高分版本内容"
+                >
+                  <Download size={12} />
+                  <span>导出</span>
+                  <ChevronDown size={12} className={`transition-transform ${isExportMenuOpen2 ? 'rotate-180' : ''}`} />
+                </button>
+                {isExportMenuOpen2 && (
+                  <div className="absolute right-0 top-full z-10 mt-1.5 w-32 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 shadow-lg" role="menu">
+                    <button
+                      onClick={() => { handleExportMarkdown(result.version2, '考研英语_高分升级版.md'); setIsExportMenuOpen2(false); }}
+                      className="w-full px-3 py-2 text-left text-xs font-medium text-slate-700 hover:bg-blue-50 hover:text-blue-600 flex items-center gap-2"
+                      role="menuitem"
+                    >
+                      <FileText size={13} />导出 .md
+                    </button>
+                    <button
+                      onClick={() => { exportRenderedPdf('考研英语高分重写升级版作文', renderRef2.current, result.version2); setIsExportMenuOpen2(false); }}
+                      className="w-full px-3 py-2 text-left text-xs font-medium text-slate-700 hover:bg-blue-50 hover:text-blue-600 flex items-center gap-2"
+                      role="menuitem"
+                    >
+                      <Download size={13} />导出 PDF
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
-          <div ref={renderRef2}>
-            <MarkdownRenderer content={result.version2} />
-          </div>
+          {isEditing2 ? (
+            <div className="space-y-3">
+              <textarea
+                value={editContent2}
+                onChange={(event) => setEditContent2(event.target.value)}
+                className="w-full h-80 p-3.5 text-xs font-mono bg-slate-50 border border-blue-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:bg-white outline-none"
+                aria-label="编辑高分版本内容"
+              />
+              <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200">
+                <div className="text-xs font-semibold text-slate-400 mb-1.5">实时渲染预览</div>
+                <MarkdownRenderer content={editContent2} />
+              </div>
+            </div>
+          ) : (
+            <div ref={renderRef2}>
+              <MarkdownRenderer content={result.version2} />
+            </div>
+          )}
         </div>
       )}
     </div>

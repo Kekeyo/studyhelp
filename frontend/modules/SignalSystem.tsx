@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { 
   Play, Square, Edit3, Download, CheckCircle2, AlertCircle, Loader2, 
   Copy, BookOpen, Sparkles, Check, FileText, FastForward, RotateCcw,
-  ArrowUp, ArrowUpToLine, ChevronUp
+  ArrowUp, ArrowUpToLine, ChevronDown, ChevronUp
 } from 'lucide-react';
 import Uploader from '../components/Uploader.tsx';
 import MarkdownRenderer from '../components/MarkdownRenderer.tsx';
@@ -188,6 +188,10 @@ export const SignalSystem: React.FC = () => {
   const [failedStageName, setFailedStageName] = useState<string>('');
   const [isEditing, setIsEditing] = useState(false);
   const [editContent, setEditContent] = useState('');
+  const [isDraftEditing, setIsDraftEditing] = useState(false);
+  const [draftEditContent, setDraftEditContent] = useState('');
+  const [isDraftExportMenuOpen, setIsDraftExportMenuOpen] = useState(false);
+  const [isFinalExportMenuOpen, setIsFinalExportMenuOpen] = useState(false);
   const [copiedDraft, setCopiedDraft] = useState(false);
   const [copiedFinal, setCopiedFinal] = useState(false);
 
@@ -295,6 +299,10 @@ export const SignalSystem: React.FC = () => {
 
     setErrorMsg('');
     setFailedStageName('');
+    setIsEditing(false);
+    setIsDraftEditing(false);
+    setIsDraftExportMenuOpen(false);
+    setIsFinalExportMenuOpen(false);
     setResult({
       draftAnswer: '',
       reviewScore: null,
@@ -694,6 +702,24 @@ export const SignalSystem: React.FC = () => {
     URL.revokeObjectURL(url);
   };
 
+  const toggleDraftEditing = () => {
+    if (isDraftEditing) {
+      setResult(previous => ({ ...previous, draftAnswer: draftEditContent }));
+    } else {
+      setDraftEditContent(result.draftAnswer);
+    }
+    setIsDraftEditing(previous => !previous);
+  };
+
+  const toggleFinalEditing = () => {
+    if (isEditing) {
+      setResult(previous => ({ ...previous, finalAnswer: editContent }));
+    } else {
+      setEditContent(result.finalAnswer);
+    }
+    setIsEditing(previous => !previous);
+  };
+
   // Robust PDF export that prints the fully rendered KaTeX DOM without clipping
   const handlePrintDraftPdf = () => {
     exportRenderedPdf(
@@ -876,7 +902,7 @@ export const SignalSystem: React.FC = () => {
               <span className="text-xs font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded">第一阶段</span>
               <h3 className="font-bold text-slate-700 text-sm">完整推导求解与图像特征提取（自检闭环）</h3>
             </div>
-            {/* Stage 1 Toolbar: Copy, Download .md and Export PDF */}
+            {/* Stage 1 Toolbar */}
             <div className="flex items-center gap-1.5">
               <button
                 onClick={() => handleCopy(result.draftAnswer, true)}
@@ -887,28 +913,70 @@ export const SignalSystem: React.FC = () => {
                 <span>{copiedDraft ? '已复制' : '复制推导'}</span>
               </button>
               <button
-                onClick={handleExportDraftMarkdown}
-                className="px-2.5 py-1 text-xs font-medium text-slate-600 hover:text-blue-600 hover:bg-blue-50 border border-slate-200 rounded-lg transition-colors flex items-center gap-1"
-                title="导出第一阶段推导 .md 文件"
+                onClick={toggleDraftEditing}
+                className={`px-2.5 py-1 text-xs font-medium border rounded-lg transition-colors flex items-center gap-1 ${
+                  isDraftEditing
+                    ? 'bg-blue-600 text-white border-blue-600'
+                    : 'text-slate-600 hover:text-blue-600 hover:bg-blue-50 border-slate-200'
+                }`}
+                title="在线编辑第一阶段推导"
               >
-                <FileText size={13} />
-                <span>导出推导 .md</span>
+                <Edit3 size={13} />
+                <span>{isDraftEditing ? '保存预览' : '编辑'}</span>
               </button>
-              <button
-                onClick={handlePrintDraftPdf}
-                className="px-2.5 py-1 text-xs font-medium text-slate-600 hover:text-blue-600 hover:bg-blue-50 border border-slate-200 rounded-lg transition-colors flex items-center gap-1"
-                title="导出第一阶段排版好的 PDF"
-              >
-                <Download size={13} />
-                <span>导出推导 PDF</span>
-              </button>
+              <div className="relative">
+                <button
+                  onClick={() => setIsDraftExportMenuOpen(previous => !previous)}
+                  className="px-2.5 py-1 text-xs font-medium text-slate-600 hover:text-blue-600 hover:bg-blue-50 border border-slate-200 rounded-lg transition-colors flex items-center gap-1"
+                  aria-haspopup="menu"
+                  aria-expanded={isDraftExportMenuOpen}
+                  title="导出第一阶段推导"
+                >
+                  <Download size={13} />
+                  <span>导出</span>
+                  <ChevronDown size={13} className={`transition-transform ${isDraftExportMenuOpen ? 'rotate-180' : ''}`} />
+                </button>
+                {isDraftExportMenuOpen && (
+                  <div className="absolute right-0 top-full z-10 mt-1.5 w-36 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 shadow-lg" role="menu">
+                    <button
+                      onClick={() => { handleExportDraftMarkdown(); setIsDraftExportMenuOpen(false); }}
+                      className="w-full px-3 py-2 text-left text-xs font-medium text-slate-700 hover:bg-blue-50 hover:text-blue-600 flex items-center gap-2"
+                      role="menuitem"
+                    >
+                      <FileText size={14} />导出 .md
+                    </button>
+                    <button
+                      onClick={() => { handlePrintDraftPdf(); setIsDraftExportMenuOpen(false); }}
+                      className="w-full px-3 py-2 text-left text-xs font-medium text-slate-700 hover:bg-blue-50 hover:text-blue-600 flex items-center gap-2"
+                      role="menuitem"
+                    >
+                      <Download size={14} />导出 PDF
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
-          <div ref={draftRenderRef}>
-            <MarkdownRenderer 
-              content={result.draftAnswer} 
-            />
-          </div>
+          {isDraftEditing ? (
+            <div className="space-y-3">
+              <textarea
+                value={draftEditContent}
+                onChange={(event) => setDraftEditContent(event.target.value)}
+                className="w-full h-80 p-3.5 text-xs font-mono bg-slate-50 border border-blue-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:bg-white outline-none"
+                aria-label="编辑第一阶段推导"
+              />
+              <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200">
+                <div className="text-xs font-semibold text-slate-400 mb-1.5">实时渲染预览</div>
+                <MarkdownRenderer content={draftEditContent} />
+              </div>
+            </div>
+          ) : (
+            <div ref={draftRenderRef}>
+              <MarkdownRenderer
+                content={result.draftAnswer}
+              />
+            </div>
+          )}
         </div>
       )}
 
@@ -946,14 +1014,7 @@ export const SignalSystem: React.FC = () => {
                 <span>{copiedFinal ? '已复制' : '复制'}</span>
               </button>
               <button
-                onClick={() => {
-                  if (isEditing) {
-                    setResult(prev => ({ ...prev, finalAnswer: editContent }));
-                  } else {
-                    setEditContent(result.finalAnswer);
-                  }
-                  setIsEditing(!isEditing);
-                }}
+                onClick={toggleFinalEditing}
                 className={`px-2.5 py-1 text-xs font-medium border rounded-lg transition-colors flex items-center gap-1 ${
                   isEditing 
                     ? 'bg-blue-600 text-white border-blue-600' 
@@ -964,22 +1025,37 @@ export const SignalSystem: React.FC = () => {
                 <Edit3 size={13} />
                 <span>{isEditing ? '保存预览' : '编辑'}</span>
               </button>
-              <button
-                onClick={handleExportMarkdown}
-                className="px-2.5 py-1 text-xs font-medium text-slate-600 hover:text-blue-600 hover:bg-blue-50 border border-slate-200 rounded-lg transition-colors flex items-center gap-1"
-                title="导出 Markdown"
-              >
-                <FileText size={13} />
-                <span>导出 .md</span>
-              </button>
-              <button
-                onClick={handlePrintFinalPdf}
-                className="px-2.5 py-1 text-xs font-medium text-slate-600 hover:text-blue-600 hover:bg-blue-50 border border-slate-200 rounded-lg transition-colors flex items-center gap-1"
-                title="导出渲染好的 PDF"
-              >
-                <Download size={13} />
-                <span>导出 PDF</span>
-              </button>
+              <div className="relative">
+                <button
+                  onClick={() => setIsFinalExportMenuOpen(previous => !previous)}
+                  className="px-2.5 py-1 text-xs font-medium text-slate-600 hover:text-blue-600 hover:bg-blue-50 border border-slate-200 rounded-lg transition-colors flex items-center gap-1"
+                  aria-haspopup="menu"
+                  aria-expanded={isFinalExportMenuOpen}
+                  title="导出最终解答"
+                >
+                  <Download size={13} />
+                  <span>导出</span>
+                  <ChevronDown size={13} className={`transition-transform ${isFinalExportMenuOpen ? 'rotate-180' : ''}`} />
+                </button>
+                {isFinalExportMenuOpen && (
+                  <div className="absolute right-0 top-full z-10 mt-1.5 w-36 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 shadow-lg" role="menu">
+                    <button
+                      onClick={() => { handleExportMarkdown(); setIsFinalExportMenuOpen(false); }}
+                      className="w-full px-3 py-2 text-left text-xs font-medium text-slate-700 hover:bg-blue-50 hover:text-blue-600 flex items-center gap-2"
+                      role="menuitem"
+                    >
+                      <FileText size={14} />导出 .md
+                    </button>
+                    <button
+                      onClick={() => { handlePrintFinalPdf(); setIsFinalExportMenuOpen(false); }}
+                      className="w-full px-3 py-2 text-left text-xs font-medium text-slate-700 hover:bg-blue-50 hover:text-blue-600 flex items-center gap-2"
+                      role="menuitem"
+                    >
+                      <Download size={14} />导出 PDF
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
 

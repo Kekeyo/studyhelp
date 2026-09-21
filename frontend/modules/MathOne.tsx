@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { AlertCircle, Check, Copy, Download, FileText, Layers, Play, RotateCcw, Square } from 'lucide-react';
+import { AlertCircle, Check, ChevronDown, Copy, Download, Edit3, FileText, Layers, Play, RotateCcw, Square } from 'lucide-react';
 import Uploader from '../components/Uploader.tsx';
 import MarkdownRenderer from '../components/MarkdownRenderer.tsx';
 import { Attachment, TaskStatus } from '../types.ts';
@@ -142,6 +142,9 @@ export const MathOne: React.FC = () => {
   const [answer, setAnswer] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
   const [copied, setCopied] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editContent, setEditContent] = useState('');
+  const [isExportMenuOpen, setIsExportMenuOpen] = useState(false);
   const answerRenderRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
 
@@ -177,6 +180,8 @@ export const MathOne: React.FC = () => {
     const controller = new AbortController();
     abortControllerRef.current = controller;
     setAnswer('');
+    setIsEditing(false);
+    setIsExportMenuOpen(false);
     setErrorMsg('');
     setStatus(TaskStatus.DRAFTING);
 
@@ -289,6 +294,15 @@ export const MathOne: React.FC = () => {
     URL.revokeObjectURL(url);
   };
 
+  const toggleEditing = () => {
+    if (isEditing) {
+      setAnswer(editContent);
+    } else {
+      setEditContent(answer);
+    }
+    setIsEditing(previous => !previous);
+  };
+
   const leftContent = (
     <div className="w-full h-full flex flex-col gap-3.5 bg-white rounded-2xl shadow-sm border border-slate-200/80 p-4 overflow-y-auto min-h-0">
       <div className="flex items-center justify-between shrink-0">
@@ -363,16 +377,73 @@ export const MathOne: React.FC = () => {
               <button onClick={handleCopy} className="px-2.5 py-1 text-xs font-medium border border-slate-200 rounded-lg hover:bg-blue-50 transition-colors flex items-center gap-1">
                 {copied ? <Check size={13} className="text-emerald-500" /> : <Copy size={13} />}{copied ? '已复制' : '复制'}
               </button>
-              <button onClick={handleExportMarkdown} className="px-2.5 py-1 text-xs font-medium border border-slate-200 rounded-lg hover:bg-blue-50 transition-colors flex items-center gap-1"><FileText size={13} />导出 .md</button>
-              <button onClick={() => exportRenderedPdf('考研数学一整卷详细解析', answerRenderRef.current, answer)} className="px-2.5 py-1 text-xs font-medium border border-slate-200 rounded-lg hover:bg-blue-50 transition-colors flex items-center gap-1"><Download size={13} />导出 PDF</button>
+              <button
+                onClick={toggleEditing}
+                className={`px-2.5 py-1 text-xs font-medium border rounded-lg transition-colors flex items-center gap-1 ${
+                  isEditing
+                    ? 'bg-blue-600 text-white border-blue-600'
+                    : 'border-slate-200 hover:bg-blue-50 hover:text-blue-600'
+                }`}
+                title="在线编辑解答"
+              >
+                <Edit3 size={13} />{isEditing ? '保存预览' : '编辑'}
+              </button>
+              <div className="relative">
+                <button
+                  onClick={() => setIsExportMenuOpen(previous => !previous)}
+                  className="px-2.5 py-1 text-xs font-medium border border-slate-200 rounded-lg hover:bg-blue-50 hover:text-blue-600 transition-colors flex items-center gap-1"
+                  aria-haspopup="menu"
+                  aria-expanded={isExportMenuOpen}
+                  title="导出解答"
+                >
+                  <Download size={13} />导出
+                  <ChevronDown size={13} className={`transition-transform ${isExportMenuOpen ? 'rotate-180' : ''}`} />
+                </button>
+                {isExportMenuOpen && (
+                  <div className="absolute right-0 top-full z-10 mt-1.5 w-36 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 shadow-lg" role="menu">
+                    <button
+                      onClick={() => { handleExportMarkdown(); setIsExportMenuOpen(false); }}
+                      className="w-full px-3 py-2 text-left text-xs font-medium text-slate-700 hover:bg-blue-50 hover:text-blue-600 flex items-center gap-2"
+                      role="menuitem"
+                    >
+                      <FileText size={14} />导出 .md
+                    </button>
+                    <button
+                      onClick={() => { exportRenderedPdf('考研数学一整卷详细解析', answerRenderRef.current, answer); setIsExportMenuOpen(false); }}
+                      className="w-full px-3 py-2 text-left text-xs font-medium text-slate-700 hover:bg-blue-50 hover:text-blue-600 flex items-center gap-2"
+                      role="menuitem"
+                    >
+                      <Download size={14} />导出 PDF
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
-          <div ref={answerRenderRef}>
+          {isEditing ? (
+            <div className="space-y-3">
+              <textarea
+                value={editContent}
+                onChange={(event) => setEditContent(event.target.value)}
+                className="w-full h-80 p-3.5 text-xs font-mono bg-slate-50 border border-blue-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:bg-white outline-none"
+                aria-label="编辑解答内容"
+              />
+              <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200">
+                <div className="text-xs font-semibold text-slate-400 mb-1.5">实时渲染预览</div>
+                <MarkdownRenderer
+                  content={editContent}
+                  className="prose-p:my-3 prose-ol:my-0 prose-ol:pl-6 prose-li:my-6 prose-li:pl-1"
+                />
+              </div>
+            </div>
+          ) : (
+            <div ref={answerRenderRef}>
             <MarkdownRenderer
               content={answer}
               className="math-answer prose-p:my-2 prose-ol:my-0 prose-ol:pl-6 prose-li:my-4 prose-li:pl-1"
             />
-          </div>
+            </div>
+          )}
         </div>
       )}
     </div>

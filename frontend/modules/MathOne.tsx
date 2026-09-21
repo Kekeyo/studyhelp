@@ -34,7 +34,7 @@ const MATH_PAGE_INDEX_PROMPT = `你正在为考研数学一试卷建立后台题
   {"id":"18","text":"不超过 20 字的题目定位提示"}
 ]
 
-id 必须是试卷印刷的阿拉伯数字题号，text 只是定位提示，不要转写完整题干。`;
+id 必须是试卷印刷的阿拉伯数字题号，text 只是定位提示，不要转写完整题干。若本页确定只是封面、目录或说明且没有任何题号，返回 []。`;
 
 const MATH_QUESTION_PROMPT = `你是一名严谨的中国考研《数学一》名师。现在只需要完成下面这一道题，不能回答其他题，也不能写前言、题目复述、处理过程、阶段说明或代码。
 
@@ -174,6 +174,15 @@ const attachmentsForQuestion = (attachments: Attachment[], question: PaperQuesti
 
 const appendAnswer = (completed: string, current: string): string => completed ? `${completed}\n\n${current}` : current;
 
+const extractPdfPageText = (sourceText: string, pageNumber: number): string => {
+  const header = `--- 第 ${pageNumber} 页 ---`;
+  const start = sourceText.indexOf(header);
+  if (start < 0) return '';
+  const pageStart = start + header.length;
+  const nextPage = sourceText.indexOf('--- 第 ', pageStart);
+  return sourceText.slice(pageStart, nextPage < 0 ? undefined : nextPage).trim();
+};
+
 const questionIdSortValue = (id: string): number => {
   const numeric = Number(id.replace(/[^0-9]/g, ''));
   return Number.isFinite(numeric) && numeric > 0 ? numeric : Number.MAX_SAFE_INTEGER;
@@ -182,7 +191,8 @@ const questionIdSortValue = (id: string): number => {
 const buildQueueFromPdfPages = async (
   attachments: Attachment[],
   controller: AbortController,
-  config: ReturnType<typeof loadStoredProviderConfig>
+  config: ReturnType<typeof loadStoredProviderConfig>,
+  sourceText: string
 ): Promise<PaperQuestion[]> => {
   const pages = attachments
     .filter((attachment) => attachment.generated && attachment.type.startsWith('image/') && Number.isInteger(attachment.pageNumber))
@@ -193,6 +203,8 @@ const buildQueueFromPdfPages = async (
   const indexedQuestions = new Map<string, PaperQuestion>();
   for (const page of pages) {
     const pageNumber = page.pageNumber as number;
+    const pageText = extractPdfPageText(sourceText, pageNumber);
+    const indexPrompt = `${MATH_PAGE_INDEX_PROMPT}\n\n当前是原卷第 ${pageNumber} 页。${pageText ? `\n\n本页 PDF 文字层（以图片为准）：\n${pageText}` : ''}`;
     let pageOutput = '';
     let pageError: unknown;
 
@@ -202,7 +214,7 @@ const buildQueueFromPdfPages = async (
       let partialPageOutput = '';
       try {
         pageOutput = await streamMessage(
-          `${MATH_PAGE_INDEX_PROMPT}\n\n当前是原卷第 ${pageNumber} 页。`,
+          indexPrompt,
           [page],
           (_delta, full) => { partialPageOutput = full; },
           controller.signal,
@@ -221,8 +233,29 @@ const buildQueueFromPdfPages = async (
     }
     if (!pageOutput) throw pageError || new Error(`第 ${pageNumber} 页题号读取失败。`);
 
-    const pageQuestions = parsePaperQuestions(pageOutput);
-    if (pageQuestions.length === 0) throw new Error(`第 ${pageNumber} 页没有识别到题号，未开始解答以避免漏题。`);
+    let pageQuestions = parsePaperQuestions(pageOutput);
+    if (pageQuestions.length === 0) {
+      // The first PDF page is often a cover or an exam instruction sheet. Give
+      // it one focused recheck (with text layer when available), then safely
+      // skip it rather than blocking all later question pages.
+      let recheckOutput = '';
+      try {
+        recheckOutput = await streamMessage(
+          `${indexPrompt}\n\n上一轮返回了空数组。请重新从页首到页尾核查：只要有任何印刷题号就必须列出；只有确认本页确实只是封面、目录或说明且没有任何题号时，才返回 []。`,
+          [page],
+          (_delta, full) => { recheckOutput = full; },
+          controller.signal,
+          config
+        );
+      } catch (error) {
+        if (controller.signal.aborted) throw error;
+        // A blank cover page should not make a transient recheck failure stop
+        // the whole paper. Later pages still go through their normal retries.
+        if (!isRecoverableStreamError(error)) throw error;
+      }
+      pageQuestions = parsePaperQuestions(recheckOutput);
+      if (pageQuestions.length === 0) continue;
+    }
 
     for (const question of pageQuestions) {
       const existing = indexedQuestions.get(question.id);
@@ -234,6 +267,8 @@ const buildQueueFromPdfPages = async (
       }
     }
   }
+
+  if (indexedQuestions.size === 0) throw new Error('整卷未识别到题号，请检查 PDF 是否为试卷页面。');
 
   return [...indexedQuestions.values()]
     .map((question) => ({ ...question, pages: question.pages.sort((left, right) => left - right) }))
@@ -296,7 +331,7 @@ export const MathOne: React.FC = () => {
       // often recognises the opening questions but loses the back half (for
       // example stopping at question 16), so it is only a fallback for a plain
       // pasted text question or one directly uploaded image.
-      let questions = await buildQueueFromPdfPages(attachments, controller, config);
+      let questions = await buildQueueFromPdfPages(attachments, controller, config, sourceText);
       if (questions.length === 0) {
         let queueOutput = '';
         let queueError: unknown;

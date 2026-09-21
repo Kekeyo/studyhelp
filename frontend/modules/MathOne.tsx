@@ -7,45 +7,34 @@ import { loadStoredProviderConfig, streamMessage } from '../services/aiAdapter.t
 import { exportRenderedPdf } from '../utils/pdfExporter.ts';
 import { ResizableSplitPane } from '../components/ResizableSplitPane.tsx';
 
-const MATH_PAPER_PROMPT = `你是一名严谨的中国考研《数学一》名师。用户上传的是一整张试卷或一张/多张题目图片。
+/** An internal-only extraction request. Its response is never rendered. */
+const MATH_SPLIT_PROMPT = `你正在为一份中国考研《数学一》试卷建立后台解题队列。请阅读提供的文本和试卷页面图片，识别试卷中的每一道独立大题，并严格保持原始顺序。
 
-请直接完成整卷解析与解答，不要先向用户展示拆题结果、题目标签、处理阶段、评分、Reviewer 意见、目录、总览或开场说明。你需要在内部准确识别所有独立题目（选择题、填空题、解答题及其小问），严格按试卷原有顺序连续作答，不能漏题、合题或调换顺序。
+选择题、填空题和解答题都各算一道题；一道解答题内的 (1)、(2) 等小问必须保留在同一个题目对象中，不能拆开。题目跨页时 pages 要列出所有相关页。必须覆盖整卷，不能只返回前几题，也不要输出任何解释、Markdown 或代码围栏。
 
-【输出顺序，必须严格执行】
-从试卷的第 1 题开始处理：先对第 1 题计算核验，然后立刻输出第 1 题的完整解答；完成后才处理并输出第 2 题，依此类推。不要等待整卷都识别完才开始写，也不要先列题目清单。调用代码工具完成后，输出给用户的第一个文字必须严格是“1.”，不能有标题、前言或“第 1 题”。
+只返回合法 JSON 数组，格式严格如下：
+[
+  {"id":"1","text":"最多 20 个字的定位提示，例如：函数极限选择题","pages":[1]},
+  {"id":"2","text":"最多 20 个字的定位提示，例如：二重积分计算题","pages":[1,2]}
+]
 
-【代码模式，必须先算后写】
-如果当前环境有 Code Execution 工具：对每道独立题在写解答前，必须先调用代码执行。使用 Python 的 sympy、numpy 或 mpmath 实际完成需要的代数化简、求根、积分、矩阵运算、数值代回或概率计算；不要伪造运行记录。若题目不适合符号计算，仍须用代码作数值抽查、边界检查或结果代回。当前环境没有代码工具时，必须如实说明并改用手算交叉核验。
+pages 是从 1 开始的试卷页码。text 只能用作定位提示，绝对不要转写完整题干、选项或推导；这样可以确保整卷题号不会在队列生成时被截断。图片文字无法完全辨认时，仍须按可见题号建立对象，并把 text 写成简短的可辨认提示，不要凭空杜撰。`;
 
-【解答质量】
-1. 图片、图形或表格中的边界、参数、坐标、选项必须先读清；不清晰处明确说明，不可臆造。
-2. 每题给出完整、可抄写的推导，而不是只给结论。关键积分、矩阵变换、概率公式、极值判别、方程检验不得跳步。
-3. 数值解要代回原式验证。代码执行只用于内部核验，不要把工具调用、代码、处理阶段或核验摘要单独展示给用户。
-4. 排版必须有层次：每个说明段单独换行；任何等式、推导链、积分、求和、极限、矩阵、分式、根式或含两个以上运算符的公式都必须单独成行，并在公式前后各空一行，使用 $$...$$。只有简单变量名才可使用行内 $...$，禁止把较长公式塞进中文段落。
-5. 不要用代码块包住整份回答；不要把“因此”“由此”等文字和公式写在同一行。
+const MATH_QUESTION_PROMPT = `你是一名严谨的中国考研《数学一》名师。现在只需要完成下面这一道题，不能回答其他题，也不能写前言、题目复述、处理过程、阶段说明或代码。
 
-请直接按下面格式连续输出整卷答案；不要在“1.”之前输出任何文字：
+在写出任何解答前，必须先在可用的代码执行工具中计算或核验本题：优先使用 sympy、numpy 或 mpmath 进行代数化简、积分、矩阵运算、数值代回、边界检查等。代码执行仅供内部核验，绝对不要在最终文字中提及代码、工具或运行记录。
 
-1. **解：**
+解答必须严谨且可抄写：补足关键推导，不要只给结论；数值结果要代回或交叉检查。图片、图形、表格或选项不清楚时必须明确这一点，不能猜测。
 
-[第一段说明]
+排版要求：说明文字分段书写。等式、推导链、积分、求和、极限、矩阵、分式、根式或含两个以上运算符的公式必须各自独占一行，并在前后留空行，以 $$...$$ 包裹；不要把长公式塞在段落中，也不要使用代码块。
 
-$$
-[独立公式或推导链]
-$$
+输出只能是本题的解答正文，且必须以 **解：** 开始，以 **答：** 给出最终结果结束。不要输出题号；题号会由页面统一添加。`;
 
-[下一段说明]
-
-$$
-[独立公式或推导链]
-$$
-
-**答：** [明确结果]
-
-2. **解：**
-...
-
-不要输出“第一阶段”“第二阶段”“正在拆题”“代码模式”或任何题目切换控件。`;
+interface PaperQuestion {
+  id: string;
+  text: string;
+  pages: number[];
+}
 
 const createClipboardAttachment = (file: File): Promise<Attachment> => new Promise((resolve, reject) => {
   const reader = new FileReader();
@@ -59,6 +48,86 @@ const createClipboardAttachment = (file: File): Promise<Attachment> => new Promi
   reader.onerror = () => reject(new Error('无法读取剪贴板图片'));
   reader.readAsDataURL(file);
 });
+
+/** Extract the first JSON array without trusting optional Markdown fences. */
+const parsePaperQuestions = (raw: string): PaperQuestion[] => {
+  const start = raw.indexOf('[');
+  if (start < 0) return [];
+
+  let inString = false;
+  let escaped = false;
+  let depth = 0;
+  for (let index = start; index < raw.length; index += 1) {
+    const char = raw[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') inString = true;
+    else if (char === '[') depth += 1;
+    else if (char === ']') {
+      depth -= 1;
+      if (depth !== 0) continue;
+      try {
+        const parsed = JSON.parse(raw.slice(start, index + 1));
+        if (!Array.isArray(parsed)) return [];
+        return parsed
+          .map((item, itemIndex): PaperQuestion | null => {
+            if (!item || typeof item !== 'object') return null;
+            const pages = Array.isArray(item.pages)
+              ? item.pages.map(Number).filter(page => Number.isInteger(page) && page > 0)
+              : [];
+            const id = String(item.id ?? itemIndex + 1).trim();
+            if (!id) return null;
+            const text = typeof item.text === 'string' && item.text.trim()
+              ? item.text.trim()
+              : `试卷中的第 ${id} 题`;
+            return { id, text, pages: [...new Set(pages)] };
+          })
+          .filter((item): item is PaperQuestion => item !== null);
+      } catch {
+        return [];
+      }
+    }
+  }
+  return [];
+};
+
+/** Keep a one-question model response in the same written-paper format every time. */
+const formatSingleQuestionAnswer = (raw: string, questionNumber: number): string => {
+  let body = raw.replace(/\r/g, '').trim();
+  // A model occasionally repeats a heading despite being told not to. Remove
+  // only the first line so subparts such as (1) and (2) remain untouched.
+  body = body.replace(/^\s*(?:#{1,6}\s*)?(?:第\s*)?\d+\s*(?:题)?[.、．]?\s*/, '');
+  body = body.replace(/^(?:\*\*)?解(?:答)?[：:]?(?:\*\*)?\s*/, '**解：**\n\n');
+  if (!body.startsWith('**解：**')) body = `**解：**\n\n${body}`;
+  body = body.replace(/(^|\n)\s*(?:\*\*)?答[：:]?(?:\*\*)?\s*/gm, '$1**答：** ');
+  return `## ${questionNumber}.\n\n${body.trim()}`;
+};
+
+const hasFinalAnswer = (raw: string): boolean => /(?:^|\n)\s*(?:\*\*)?答[：:]/m.test(raw);
+
+const looksCutOff = (raw: string): boolean => {
+  const compact = raw.trim();
+  if (!compact) return true;
+  const displayMathMarkers = compact.match(/\$\$/g)?.length ?? 0;
+  if (displayMathMarkers % 2 !== 0) return true;
+  return /(?:[=+\-*/≤≥<>，,;:：]|\\[a-zA-Z]+|[（(\[{])\s*$/u.test(compact);
+};
+
+const attachmentsForQuestion = (attachments: Attachment[], question: PaperQuestion): Attachment[] => {
+  const pageSet = new Set(question.pages);
+  return attachments.filter((attachment) => {
+    if (!attachment.type.startsWith('image/')) return false;
+    // Directly uploaded images may contain a whole paper, so they always stay
+    // available. Rendered PDF pages are narrowed to this question when known.
+    return !attachment.generated || pageSet.size === 0 || pageSet.has(attachment.pageNumber ?? -1);
+  });
+};
+
+const appendAnswer = (completed: string, current: string): string => completed ? `${completed}\n\n${current}` : current;
 
 export const MathOne: React.FC = () => {
   const [textInput, setTextInput] = useState('');
@@ -105,28 +174,83 @@ export const MathOne: React.FC = () => {
     setErrorMsg('');
     setStatus(TaskStatus.DRAFTING);
 
-    const prompt = `${MATH_PAPER_PROMPT}\n\n试卷文本（扫描件以上传的页面图片为准）：\n${textInput || '无可用文字层，请完全根据上传图片识别。'}`;
+    const sourceText = textInput || '无可用文字层，请完全根据上传的试卷页面图片识别。';
     try {
-      const output = await streamMessage(
-        prompt,
+      // The queue is deliberately invisible: splitting the paper here keeps a
+      // single answer request small enough to finish, while the reader sees one
+      // ordinary, continuous answer document rather than a multi-question UI.
+      const queueOutput = await streamMessage(
+        `${MATH_SPLIT_PROMPT}\n\n试卷文本（扫描件以上传的页面图片为准）：\n${sourceText}`,
         attachments,
-        (_delta, full) => {
-          setAnswer(full);
-        },
+        () => {},
         controller.signal,
-        config,
-        undefined,
-        { enableGoogleCodeExecution: true }
+        config
       );
-      setAnswer(output);
+
+      const questions = parsePaperQuestions(queueOutput);
+      // A model can occasionally refuse the JSON-only request. Retain the old
+      // whole-paper fallback so an otherwise readable upload is never discarded.
+      const queue = questions.length > 0
+        ? questions
+        : [{ id: '1', text: sourceText, pages: [] }];
+
+      let completedAnswer = '';
+      for (let index = 0; index < queue.length; index += 1) {
+        if (controller.signal.aborted) throw new Error('Aborted');
+
+        const question = queue[index];
+        const questionNumber = index + 1;
+        const relevantAttachments = attachmentsForQuestion(attachments, question);
+        const questionSource = relevantAttachments.length > 0
+          ? `请在随附的试卷页面中定位原卷第 ${question.id} 题；定位提示：${question.text}。只解这一题及其全部小问。`
+          : `当前题目（统一编号为 ${questionNumber}，原卷题号为 ${question.id}，定位提示：${question.text}）：\n${sourceText}`;
+        const questionPrompt = `${MATH_QUESTION_PROMPT}\n\n${questionSource}`;
+        let questionOutput = await streamMessage(
+          questionPrompt,
+          relevantAttachments,
+          (_delta, full) => {
+            setAnswer(appendAnswer(completedAnswer, formatSingleQuestionAnswer(full, questionNumber)));
+          },
+          controller.signal,
+          config,
+          undefined,
+          { enableGoogleCodeExecution: true }
+        );
+
+        // Do not silently accept an answer cut off in the middle of a formula
+        // or one that never reached its final result. One focused continuation
+        // is far safer than letting the next question conceal the truncation.
+        if (!hasFinalAnswer(questionOutput) || looksCutOff(questionOutput)) {
+          const continuationPrompt = `继续完成同一道考研数学一题。下面的已有解答因输出中断或未写完而停止。请从最后一句继续，不要重复已有推导、不要输出题号，仍须只输出解答正文，并以 **答：** 给出最终结果。先使用可用代码执行工具核验尚未完成的计算；不要提及代码或工具。\n\n题目定位：原卷第 ${question.id} 题，${question.text}\n\n已有解答：\n${questionOutput}`;
+          const continuation = await streamMessage(
+            continuationPrompt,
+            relevantAttachments,
+            (_delta, full) => {
+              const extended = `${questionOutput}\n\n${full}`;
+              setAnswer(appendAnswer(completedAnswer, formatSingleQuestionAnswer(extended, questionNumber)));
+            },
+            controller.signal,
+            config,
+            undefined,
+            { enableGoogleCodeExecution: true }
+          );
+          questionOutput = `${questionOutput}\n\n${continuation}`;
+        }
+
+        completedAnswer = appendAnswer(completedAnswer, formatSingleQuestionAnswer(questionOutput, questionNumber));
+        setAnswer(completedAnswer);
+      }
+
       setStatus(TaskStatus.DONE);
     } catch (error: any) {
-      if (error?.message === 'Aborted') {
+      if (controller.signal.aborted || error?.message === 'Aborted') {
         setStatus(TaskStatus.IDLE);
       } else {
         setStatus(TaskStatus.ERROR);
-        setErrorMsg(error?.message || '整卷解答失败，请重试。');
+        setErrorMsg(error?.message || '试卷解答失败，请重试。');
       }
+    } finally {
+      if (abortControllerRef.current === controller) abortControllerRef.current = null;
     }
   };
 
@@ -223,7 +347,7 @@ export const MathOne: React.FC = () => {
       )}
 
       {isProcessing && !answer && (
-        <p className="text-xs text-slate-400 px-2 pt-2">正在读取第 1 题…</p>
+        <p className="text-xs text-slate-400 px-2 pt-2">正在计算并整理整卷答案…</p>
       )}
 
       {answer && (

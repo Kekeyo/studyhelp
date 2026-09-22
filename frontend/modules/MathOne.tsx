@@ -135,6 +135,7 @@ export const MathOne: React.FC = () => {
   const [status, setStatus] = useState<TaskStatus>(TaskStatus.IDLE);
   const [answer, setAnswer] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
+  const [progressMsg, setProgressMsg] = useState('');
   const [copied, setCopied] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [editContent, setEditContent] = useState('');
@@ -175,9 +176,11 @@ export const MathOne: React.FC = () => {
     abortControllerRef.current = controller;
     setAnswer('');
     setErrorMsg('');
+    setProgressMsg('正在识别试卷题目队列…');
     setStatus(TaskStatus.DRAFTING);
 
     const sourceText = textInput || '无可用文字层，请完全根据上传的试卷页面图片识别。';
+    let currentProgress = '正在识别试卷题目队列';
     try {
       // The queue is deliberately invisible: splitting the paper here keeps a
       // single answer request small enough to finish, while the reader sees one
@@ -203,6 +206,8 @@ export const MathOne: React.FC = () => {
 
         const question = queue[index];
         const questionNumber = index + 1;
+        currentProgress = `正在解答第 ${questionNumber}/${queue.length} 题（原卷第 ${question.id} 题）`;
+        setProgressMsg(`${currentProgress}…`);
         const relevantAttachments = attachmentsForQuestion(attachments, question);
         const questionSource = relevantAttachments.length > 0
           ? `请在随附的试卷页面中定位原卷第 ${question.id} 题；定位提示：${question.text}。只解这一题及其全部小问。`
@@ -245,12 +250,13 @@ export const MathOne: React.FC = () => {
       }
 
       setStatus(TaskStatus.DONE);
+      setProgressMsg('整卷解答完成。');
     } catch (error: any) {
       if (controller.signal.aborted || error?.message === 'Aborted') {
         setStatus(TaskStatus.IDLE);
       } else {
         setStatus(TaskStatus.ERROR);
-        setErrorMsg(error?.message || '试卷解答失败，请重试。');
+        setErrorMsg(`${currentProgress}失败：${error?.message || '服务没有返回可读错误。请查看本地代理终端或 http://127.0.0.1:5001/diagnostics。'}`);
       }
     } finally {
       if (abortControllerRef.current === controller) abortControllerRef.current = null;
@@ -359,7 +365,11 @@ export const MathOne: React.FC = () => {
       )}
 
       {isProcessing && !answer && (
-        <p className="text-xs text-slate-400 px-2 pt-2">正在计算并整理整卷答案…</p>
+        <p className="text-xs text-slate-400 px-2 pt-2">{progressMsg || '正在计算并整理整卷答案…'}</p>
+      )}
+
+      {isProcessing && answer && (
+        <p className="text-xs text-slate-400 px-2">{progressMsg || '正在继续整理答案…'}</p>
       )}
 
       {answer && (

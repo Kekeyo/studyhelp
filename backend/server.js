@@ -8,6 +8,7 @@ import 'dotenv/config';
 import express from 'express';
 import { GoogleAuth } from 'google-auth-library';
 import { Readable } from 'node:stream';
+import { randomUUID } from 'node:crypto';
 import rateLimit from 'express-rate-limit';
 import { WebSocketServer, WebSocket } from 'ws';
 
@@ -30,6 +31,51 @@ const ALLOWED_CLIENT_ORIGINS = new Set([
   'http://127.0.0.1:5173',
 ]);
 
+// Keep a small, privacy-safe request journal in memory.  It deliberately
+// excludes prompts, attachments, tokens and authorization headers; it exists
+// solely to tell a local user whether a failure happened before Vertex, at
+// Vertex, or while the response stream was being consumed.
+const MAX_DIAGNOSTIC_EVENTS = 100;
+const diagnosticEvents = [];
+
+function recordDiagnostic(event) {
+  diagnosticEvents.unshift({ at: new Date().toISOString(), ...event });
+  if (diagnosticEvents.length > MAX_DIAGNOSTIC_EVENTS) diagnosticEvents.length = MAX_DIAGNOSTIC_EVENTS;
+  console.log(`[StudyHelp diagnostics] ${JSON.stringify(diagnosticEvents[0])}`);
+}
+
+function safeMessage(value, fallback = '本地代理发生未知错误。') {
+  if (typeof value === 'string' && value.trim()) return value.trim().slice(0, 700);
+  if (value && typeof value.message === 'string' && value.message.trim()) return value.message.trim().slice(0, 700);
+  return fallback;
+}
+
+function classifyFailure(status, error, phase = 'request') {
+  if (phase === 'stream') return { category: 'stream_interrupted', retryable: true, label: '模型输出流中断' };
+  if (status === 400) return { category: 'invalid_request', retryable: false, label: '请求参数或模型工具不兼容' };
+  if (status === 401 || status === 403) return { category: 'adc_authentication', retryable: false, label: 'ADC 认证或项目权限失败' };
+  if (status === 404) return { category: 'model_or_endpoint', retryable: false, label: '模型或接口不可用' };
+  if (status === 429) return { category: 'rate_limited', retryable: true, label: 'Vertex 请求限流' };
+  const code = error?.code || error?.cause?.code;
+  if (code || error instanceof TypeError) return { category: 'network_or_proxy', retryable: true, label: '本机代理或网络连接失败' };
+  if (status >= 500) return { category: 'vertex_unavailable', retryable: true, label: 'Vertex 上游服务暂不可用' };
+  return { category: 'proxy_internal', retryable: true, label: '本地代理处理失败' };
+}
+
+function errorPayload({ requestId, status, error, phase, upstreamMessage }) {
+  const classification = classifyFailure(status, error, phase);
+  return {
+    error: {
+      requestId,
+      category: classification.category,
+      label: classification.label,
+      message: upstreamMessage || safeMessage(error),
+      retryable: classification.retryable,
+      status: status || 500,
+    },
+  };
+}
+
 app.use((req, res, next) => {
   const origin = req.headers.origin;
   if (origin && !ALLOWED_CLIENT_ORIGINS.has(origin)) {
@@ -40,7 +86,7 @@ app.use((req, res, next) => {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Vary', 'Origin');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-StudyHelp-Request-Id');
     res.setHeader('Access-Control-Allow-Private-Network', 'true');
   }
 
@@ -52,7 +98,19 @@ app.use((req, res, next) => {
 });
 
 app.get('/health', (_req, res) => {
-  res.json({ ok: true, service: 'studyhelp-local-vertex-proxy' });
+  res.json({ ok: true, service: 'studyhelp-local-vertex-proxy', diagnostics: diagnosticEvents.length });
+});
+
+app.get('/diagnostics', (req, res) => {
+  const requestedLimit = Number.parseInt(req.query.limit, 10);
+  const limit = Number.isInteger(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), MAX_DIAGNOSTIC_EVENTS) : 30;
+  res.json({ ok: true, events: diagnosticEvents.slice(0, limit) });
+});
+
+app.get('/diagnostics/:requestId', (req, res) => {
+  const event = diagnosticEvents.find(item => item.requestId === req.params.requestId);
+  if (!event) return res.status(404).json({ error: { message: '未找到该诊断记录；本地代理重启后记录会清空。' } });
+  res.json({ ok: true, event });
 });
 
 app.set('trust proxy', 1 /* number of proxies between user and server */);
@@ -222,23 +280,21 @@ function extractParams(patternInfo, url) {
   return params;
 }
 
-async function getAccessToken(res) {
+async function getAccessToken() {
   try {
     const authClient = await auth.getClient();
     const token = await authClient.getAccessToken();
     return token.token;
   } catch (error) {
     console.error('[Node Proxy] Authentication error:', error);
-    if (!res) return null;
-    if (error.code === 'ERR_GCLOUD_NOT_LOGGED_IN' || (error.message && error.message.includes('Could not load the default credentials'))) {
-      res.status(401).json({
-        error: 'Authentication Required',
-        message: 'Google Cloud Application Default Credentials not found or invalid. Please run "gcloud auth application-default login" and try again.',
-      });
-    } else {
-      res.status(500).json({ error: `Authentication failed: ${error.message}` });
-    }
-    return null;
+    const authError = new Error(
+      error.code === 'ERR_GCLOUD_NOT_LOGGED_IN' || error.message?.includes('Could not load the default credentials')
+        ? '未找到有效的 Google ADC。请执行 gcloud auth application-default login 后重试。'
+        : `读取 Google ADC 失败：${safeMessage(error)}`
+    );
+    authError.code = error.code || 'ADC_AUTH_FAILED';
+    authError.status = 401;
+    throw authError;
   }
 }
 
@@ -252,9 +308,14 @@ function getRequestHeaders(accessToken) {
 
 // --- Proxy Endpoint ---
 app.post('/api-proxy', async (req, res) => {
+  const requestId = randomUUID();
+  const startedAt = Date.now();
+  res.setHeader('X-StudyHelp-Request-Id', requestId);
   const { originalUrl, method, headers, body } = req.body;
   if (!originalUrl) {
-    return res.status(400).send('Bad Request: originalUrl is required.');
+    const payload = errorPayload({ requestId, status: 400, upstreamMessage: '请求缺少 originalUrl。' });
+    recordDiagnostic({ requestId, outcome: 'failed', category: payload.error.category, status: 400, durationMs: Date.now() - startedAt });
+    return res.status(400).json(payload);
   }
 
   // 1. Find the matching API client
@@ -266,15 +327,17 @@ app.post('/api-proxy', async (req, res) => {
 
   if (!apiClient) {
     console.error(`[Node Proxy] No API client handler found for URL: ${originalUrl}`);
-    return res.status(404).json({ error: `No proxy handler found for URL: ${originalUrl}` });
+    const payload = errorPayload({ requestId, status: 404, upstreamMessage: '本地代理不支持该 Vertex 接口。' });
+    recordDiagnostic({ requestId, outcome: 'failed', category: payload.error.category, status: 404, durationMs: Date.now() - startedAt });
+    return res.status(404).json(payload);
   }
 
   const extractedParams = req.extractedParams;
-  console.log(`[Node Proxy] Matched API client: ${apiClient.name}`);
+  const requestInfo = { requestId, client: apiClient.name, model: extractedParams.model, stream: apiClient.isStreaming };
+  console.log(`[Node Proxy] [${requestId}] Matched API client: ${apiClient.name}`);
   try {
     // 2. Get authenticated access token
-    const accessToken = await getAccessToken(res);
-    if (!accessToken) return;
+    const accessToken = await getAccessToken();
 
     // 3. Construct the full API URL using env-set GOOGLE_CLOUD_PROJECT/LOCATION and extracted params
     const context = {projectId: GOOGLE_CLOUD_PROJECT, region: GOOGLE_CLOUD_LOCATION};
@@ -291,11 +354,15 @@ app.post('/api-proxy', async (req, res) => {
       parsedApiUrl = new URL(apiUrl);
     } catch (e) {
       console.error(`[Node Proxy] Invalid API URL: ${apiUrl}`);
-      return res.status(400).json({ error: 'Invalid API URL.' });
+      const payload = errorPayload({ requestId, status: 400, upstreamMessage: '本地代理构造的 Vertex 地址无效。' });
+      recordDiagnostic({ ...requestInfo, outcome: 'failed', category: payload.error.category, status: 400, durationMs: Date.now() - startedAt });
+      return res.status(400).json(payload);
     }
     if (!ALLOWED_UPSTREAM_HOSTS.has(parsedApiUrl.hostname.toLowerCase())) {
       console.error(`[Node Proxy] Upstream host not allowed: ${parsedApiUrl.hostname}`);
-      return res.status(400).json({ error: 'Upstream host not allowed.' });
+      const payload = errorPayload({ requestId, status: 400, upstreamMessage: 'Vertex 上游主机不在本地代理白名单中。' });
+      recordDiagnostic({ ...requestInfo, outcome: 'failed', category: payload.error.category, status: 400, durationMs: Date.now() - startedAt });
+      return res.status(400).json(payload);
     }
     console.log(`[Node Proxy] Forwarding to Vertex API: ${apiUrl}`);
 
@@ -315,7 +382,14 @@ app.post('/api-proxy', async (req, res) => {
     // body as a successful stream would otherwise make the page appear blank.
     if (!apiResponse.ok) {
       const errorBody = await apiResponse.text();
-      return res.status(apiResponse.status).type(apiResponse.headers.get('content-type') || 'application/json').send(errorBody);
+      let upstreamMessage = errorBody;
+      try {
+        const parsed = JSON.parse(errorBody);
+        upstreamMessage = parsed?.error?.message || parsed?.message || errorBody;
+      } catch { /* Vertex may return plain text. */ }
+      const payload = errorPayload({ requestId, status: apiResponse.status, upstreamMessage });
+      recordDiagnostic({ ...requestInfo, outcome: 'failed', category: payload.error.category, status: apiResponse.status, durationMs: Date.now() - startedAt });
+      return res.status(apiResponse.status).json(payload);
     }
 
     // 6. Respond to the client based on stream type
@@ -332,7 +406,10 @@ app.post('/api-proxy', async (req, res) => {
 
       if (!apiResponse.body) {
         console.error('[Node Proxy] Streaming response has no body.');
-        return res.end(JSON.stringify({ error: 'Streaming response body is null' }));
+        const payload = errorPayload({ requestId, status: 502, phase: 'stream', upstreamMessage: 'Vertex 返回了空的流式响应。' });
+        recordDiagnostic({ ...requestInfo, outcome: 'failed', category: payload.error.category, status: 502, durationMs: Date.now() - startedAt });
+        res.write(`data: ${JSON.stringify(payload)}\n\n`);
+        return res.end();
       }
 
       const responseBody = Readable.fromWeb(apiResponse.body);
@@ -355,6 +432,10 @@ app.post('/api-proxy', async (req, res) => {
         } catch (error) {
           console.error(`[Node Proxy] Error processing streaming response for ${apiClient.name}`);
           console.error(error);
+          const payload = errorPayload({ requestId, status: 502, error, phase: 'stream' });
+          recordDiagnostic({ ...requestInfo, outcome: 'failed', category: payload.error.category, status: 502, durationMs: Date.now() - startedAt });
+          if (!res.writableEnded) res.write(`data: ${JSON.stringify(payload)}\n\n`);
+          responseBody.destroy(error);
         }
       });
 
@@ -362,8 +443,12 @@ app.post('/api-proxy', async (req, res) => {
         if (deltaChunk.trim()) {
           console.error('[Node Proxy] Vertex stream ended with an incomplete JSON response.');
           if (!res.writableEnded) {
-            res.write(`data: ${JSON.stringify({ error: 'Vertex stream ended before a complete response was received.' })}\n\n`);
+            const payload = errorPayload({ requestId, status: 502, phase: 'stream', upstreamMessage: 'Vertex 输出流在完整响应前结束。' });
+            recordDiagnostic({ ...requestInfo, outcome: 'failed', category: payload.error.category, status: 502, durationMs: Date.now() - startedAt });
+            res.write(`data: ${JSON.stringify(payload)}\n\n`);
           }
+        } else {
+          recordDiagnostic({ ...requestInfo, outcome: 'success', status: apiResponse.status, durationMs: Date.now() - startedAt });
         }
         deltaChunk = '';
         console.log(`[Node Proxy] Vertex stream finished and all data processed for ${apiClient.name}`);
@@ -373,7 +458,10 @@ app.post('/api-proxy', async (req, res) => {
       responseBody.on('error', (streamError) => {
         console.error('[Node Proxy] Error from Vertex stream:', streamError);
         if (!res.writableEnded) {
-          res.end(JSON.stringify({ proxyError: 'Stream error from Vertex AI', details: streamError.message }));
+          const payload = errorPayload({ requestId, status: 502, error: streamError, phase: 'stream' });
+          recordDiagnostic({ ...requestInfo, outcome: 'failed', category: payload.error.category, status: 502, durationMs: Date.now() - startedAt });
+          res.write(`data: ${JSON.stringify(payload)}\n\n`);
+          res.end();
         }
       });
 
@@ -386,12 +474,15 @@ app.post('/api-proxy', async (req, res) => {
       // Non-streaming response handling
       console.log(`[Node Proxy] Sending JSON response for ${apiClient.name}`);
       const data = await apiResponse.json();
+      recordDiagnostic({ ...requestInfo, outcome: 'success', status: apiResponse.status, durationMs: Date.now() - startedAt });
       res.status(apiResponse.status).json(data);
     }
   } catch (error) {
-    console.error(`[Node Proxy] Error proxying request for ${apiClient.name}`);
-    console.error(error)
-    res.status(500).json({ error: error });
+    const status = Number.isInteger(error?.status) ? error.status : 502;
+    const payload = errorPayload({ requestId, status, error });
+    console.error(`[Node Proxy] [${requestId}] Error proxying request for ${apiClient.name}:`, safeMessage(error));
+    recordDiagnostic({ ...requestInfo, outcome: 'failed', category: payload.error.category, status, durationMs: Date.now() - startedAt });
+    if (!res.headersSent) res.status(status).json(payload);
   }
 });
 

@@ -4,6 +4,27 @@ import { ProviderConfig, Attachment, ProviderType, StreamTelemetryCallbacks, Str
 const DEFAULT_GEMINI_MODEL = 'gemini-3.8-flash';
 const LEGACY_GEMINI_MODEL = 'gemini-2.5-flash';
 
+/** Turn proxy/SDK exceptions into a useful message instead of "{ error: {} }". */
+const explainProviderError = (value: unknown): string => {
+  if (value instanceof Error && value.message === 'Aborted') return 'Aborted';
+  const raw = value instanceof Error ? value.message : typeof value === 'string' ? value : '';
+  let candidate: any = value;
+  if (raw) {
+    try { candidate = JSON.parse(raw); } catch { /* SDK may already have a plain message. */ }
+  }
+  const detail = candidate?.error ?? candidate;
+  if (detail && typeof detail === 'object') {
+    const label = typeof detail.label === 'string' ? detail.label : '';
+    const message = typeof detail.message === 'string' ? detail.message : raw;
+    const requestId = typeof detail.requestId === 'string' ? detail.requestId : '';
+    const category = typeof detail.category === 'string' ? detail.category : '';
+    if (label || message || requestId) {
+      return `${label || '请求失败'}：${message || '未返回详细信息。'}${category ? `（类别：${category}）` : ''}${requestId ? `，诊断 ID：${requestId}` : ''}`;
+    }
+  }
+  return raw || '请求失败，但服务没有返回可读错误。请查看本地代理终端或 /diagnostics。';
+};
+
 export const VERTEX_MODEL_OPTIONS = [
   {
     label: 'Gemini 3.8 Flash（最新推荐 · 默认）',
@@ -211,19 +232,25 @@ export async function streamMessage(
         : `正在连接 Google Gemini API [${config.model || DEFAULT_GEMINI_MODEL}]${codeExecutionEnabled ? '，Code Execution 已开启' : ''}...`
     );
 
-    const responseStream = await ai.models.generateContentStream({
-      model: config.model || DEFAULT_GEMINI_MODEL,
-      contents: {
-        role: 'user',
-        parts: parts
-      },
-      config: codeExecutionEnabled
-        ? { tools: [{ codeExecution: {} }] }
-        : undefined
-    });
+    let responseStream: any;
+    try {
+      responseStream = await ai.models.generateContentStream({
+        model: config.model || DEFAULT_GEMINI_MODEL,
+        contents: {
+          role: 'user',
+          parts: parts
+        },
+        config: codeExecutionEnabled
+          ? { tools: [{ codeExecution: {} }] }
+          : undefined
+      });
+    } catch (error) {
+      throw new Error(explainProviderError(error));
+    }
 
     telemetry?.onStatusChange?.('streaming', '模型正在流式输出中...');
 
+    try {
     for await (const chunk of responseStream) {
       if (signal?.aborted) {
         throw new Error('Aborted');
@@ -283,6 +310,9 @@ export async function streamMessage(
           telemetry?.onTokenUsage?.(liveTokens);
         }
       }
+    }
+    } catch (error) {
+      throw new Error(explainProviderError(error));
     }
 
     // Ensure final token metadata is always reported

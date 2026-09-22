@@ -306,6 +306,14 @@ export const MathOne: React.FC = () => {
           ));
         }
 
+        // Never advance the checkpoint past an empty or still-truncated answer.
+        // The retry button must remain on this original question so it can be
+        // independently recomputed from its source page.
+        if (!hasFinalAnswer(questionOutput) || looksCutOff(questionOutput)) {
+          setAnswer(completedAnswer);
+          throw new Error(`模型没有给出第 ${questionNumber} 题的完整答案；已停在该题。请点击“继续分析”重新独立演算。`);
+        }
+
         completedAnswer = appendAnswer(completedAnswer, formatSingleQuestionAnswer(questionOutput, questionNumber));
         setAnswer(completedAnswer);
         checkpointRef.current = { queue, nextIndex: index + 1, completedAnswer };

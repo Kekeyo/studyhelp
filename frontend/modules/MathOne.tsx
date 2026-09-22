@@ -36,6 +36,12 @@ interface PaperQuestion {
   pages: number[];
 }
 
+interface PaperRunCheckpoint {
+  queue: PaperQuestion[];
+  nextIndex: number;
+  completedAnswer: string;
+}
+
 const createClipboardAttachment = (file: File): Promise<Attachment> => new Promise((resolve, reject) => {
   const reader = new FileReader();
   reader.onload = (event) => resolve({
@@ -167,10 +173,12 @@ export const MathOne: React.FC = () => {
   const answerTopRef = useRef<HTMLDivElement>(null);
   const answerScrollContainerRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const checkpointRef = useRef<PaperRunCheckpoint | null>(null);
 
   const isProcessing = status === TaskStatus.DRAFTING;
   const isDone = status === TaskStatus.DONE;
   const isInterrupted = status === TaskStatus.ERROR || (status === TaskStatus.IDLE && Boolean(answer));
+  const canResume = (status === TaskStatus.ERROR || status === TaskStatus.IDLE) && checkpointRef.current !== null;
 
   const handleFilesAdded = (newFiles: Attachment[], extractedText?: string) => {
     setAttachments(previous => [...previous, ...newFiles]);
@@ -190,7 +198,7 @@ export const MathOne: React.FC = () => {
     }
   };
 
-  const runDirectSolve = async () => {
+  const runDirectSolve = async (resume = false) => {
     if (!textInput.trim() && attachments.length === 0) {
       setErrorMsg('请粘贴题目，或上传整张数学一试卷 PDF / 图片。');
       return;
@@ -199,13 +207,17 @@ export const MathOne: React.FC = () => {
     const config = loadStoredProviderConfig();
     const controller = new AbortController();
     abortControllerRef.current = controller;
-    setAnswer('');
+    const checkpoint = resume ? checkpointRef.current : null;
+    if (!checkpoint) {
+      checkpointRef.current = null;
+      setAnswer('');
+    }
     setErrorMsg('');
-    setProgressMsg('正在识别试卷题目队列…');
+    setProgressMsg(checkpoint ? `正在从第 ${checkpoint.nextIndex + 1}/${checkpoint.queue.length} 题继续…` : '正在识别试卷题目队列…');
     setStatus(TaskStatus.DRAFTING);
 
     const sourceText = textInput || '无可用文字层，请完全根据上传的试卷页面图片识别。';
-    let currentProgress = '正在识别试卷题目队列';
+    let currentProgress = checkpoint ? `正在解答第 ${checkpoint.nextIndex + 1}/${checkpoint.queue.length} 题` : '正在识别试卷题目队列';
     const withTransientRetry = async <T,>(request: () => Promise<T>): Promise<T> => {
       // Keeping the current question in memory means a retry never restarts
       // the paper. Vertex 429 needs longer exponential backoff; a proxy socket
@@ -229,32 +241,37 @@ export const MathOne: React.FC = () => {
       }
     };
     try {
-      // The queue is deliberately invisible: splitting the paper here keeps a
-      // single answer request small enough to finish, while the reader sees one
-      // ordinary, continuous answer document rather than a multi-question UI.
-      const queueOutput = await withTransientRetry(() => streamMessage(
-        `${MATH_SPLIT_PROMPT}\n\n试卷文本（扫描件以上传的页面图片为准）：\n${sourceText}`,
-        attachments,
-        () => {},
-        controller.signal,
-        config
-      ));
+      let queue: PaperQuestion[];
+      let completedAnswer: string;
+      let startIndex: number;
+      if (checkpoint) {
+        queue = checkpoint.queue;
+        completedAnswer = checkpoint.completedAnswer;
+        startIndex = checkpoint.nextIndex;
+      } else {
+        // The queue is deliberately invisible: splitting the paper here keeps
+        // a single answer request small enough to finish.
+        const queueOutput = await withTransientRetry(() => streamMessage(
+          `${MATH_SPLIT_PROMPT}\n\n试卷文本（扫描件以上传的页面图片为准）：\n${sourceText}`,
+          attachments,
+          () => {},
+          controller.signal,
+          config
+        ));
+        const questions = parsePaperQuestions(queueOutput);
+        queue = questions.length > 0 ? questions : [{ id: '1', text: sourceText, pages: [] }];
+        completedAnswer = '';
+        startIndex = 0;
+      }
 
-      const questions = parsePaperQuestions(queueOutput);
-      // A model can occasionally refuse the JSON-only request. Retain the old
-      // whole-paper fallback so an otherwise readable upload is never discarded.
-      const queue = questions.length > 0
-        ? questions
-        : [{ id: '1', text: sourceText, pages: [] }];
-
-      let completedAnswer = '';
-      for (let index = 0; index < queue.length; index += 1) {
+      for (let index = startIndex; index < queue.length; index += 1) {
         if (controller.signal.aborted) throw new Error('Aborted');
 
         const question = queue[index];
         const questionNumber = index + 1;
         currentProgress = `正在解答第 ${questionNumber}/${queue.length} 题（原卷第 ${question.id} 题）`;
         setProgressMsg(`${currentProgress}…`);
+        checkpointRef.current = { queue, nextIndex: index, completedAnswer };
         const relevantAttachments = attachmentsForQuestion(attachments, question);
         const questionSource = relevantAttachments.length > 0
           ? `请在随附的试卷页面中定位原卷第 ${question.id} 题；定位提示：${question.text}。只解这一题及其全部小问。`
@@ -294,10 +311,12 @@ export const MathOne: React.FC = () => {
 
         completedAnswer = appendAnswer(completedAnswer, formatSingleQuestionAnswer(questionOutput, questionNumber));
         setAnswer(completedAnswer);
+        checkpointRef.current = { queue, nextIndex: index + 1, completedAnswer };
       }
 
       setStatus(TaskStatus.DONE);
       setProgressMsg('整卷解答完成。');
+      checkpointRef.current = null;
     } catch (error: any) {
       if (controller.signal.aborted || error?.message === 'Aborted') {
         setStatus(TaskStatus.IDLE);
@@ -389,9 +408,9 @@ export const MathOne: React.FC = () => {
             <Square size={15} className="fill-current" />停止
           </button>
         ) : (
-          <button onClick={runDirectSolve} className="w-full bg-blue-600 hover:bg-blue-700 active:scale-[0.99] text-white py-2.5 rounded-xl font-semibold flex items-center justify-center gap-2 transition-all shadow-sm text-sm">
-            {isDone || isInterrupted ? <RotateCcw size={16} /> : <Play size={16} className="fill-current" />}
-            {isDone || isInterrupted ? '重新开始分析' : '开始分析'}
+          <button onClick={() => runDirectSolve(canResume)} className="w-full bg-blue-600 hover:bg-blue-700 active:scale-[0.99] text-white py-2.5 rounded-xl font-semibold flex items-center justify-center gap-2 transition-all shadow-sm text-sm">
+            {canResume ? <Play size={16} className="fill-current" /> : isDone || isInterrupted ? <RotateCcw size={16} /> : <Play size={16} className="fill-current" />}
+            {canResume ? `继续分析（从第 ${checkpointRef.current!.nextIndex + 1} 题）` : isDone || isInterrupted ? '重新开始分析' : '开始分析'}
           </button>
         )}
       </div>

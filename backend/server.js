@@ -76,6 +76,15 @@ function errorPayload({ requestId, status, error, phase, upstreamMessage }) {
   };
 }
 
+function connectionDiagnosticDetails(error) {
+  const cause = error?.cause;
+  return {
+    errorName: error?.name || undefined,
+    errorCode: error?.code || cause?.code || undefined,
+    causeMessage: cause ? safeMessage(cause, '') : undefined,
+  };
+}
+
 app.use((req, res, next) => {
   const origin = req.headers.origin;
   if (origin && !ALLOWED_CLIENT_ORIGINS.has(origin)) {
@@ -433,7 +442,7 @@ app.post('/api-proxy', async (req, res) => {
           console.error(`[Node Proxy] Error processing streaming response for ${apiClient.name}`);
           console.error(error);
           const payload = errorPayload({ requestId, status: 502, error, phase: 'stream' });
-          recordDiagnostic({ ...requestInfo, outcome: 'failed', category: payload.error.category, status: 502, durationMs: Date.now() - startedAt });
+          recordDiagnostic({ ...requestInfo, ...connectionDiagnosticDetails(error), outcome: 'failed', category: payload.error.category, status: 502, durationMs: Date.now() - startedAt });
           if (!res.writableEnded) res.write(`data: ${JSON.stringify(payload)}\n\n`);
           responseBody.destroy(error);
         }
@@ -459,7 +468,7 @@ app.post('/api-proxy', async (req, res) => {
         console.error('[Node Proxy] Error from Vertex stream:', streamError);
         if (!res.writableEnded) {
           const payload = errorPayload({ requestId, status: 502, error: streamError, phase: 'stream' });
-          recordDiagnostic({ ...requestInfo, outcome: 'failed', category: payload.error.category, status: 502, durationMs: Date.now() - startedAt });
+          recordDiagnostic({ ...requestInfo, ...connectionDiagnosticDetails(streamError), outcome: 'failed', category: payload.error.category, status: 502, durationMs: Date.now() - startedAt });
           res.write(`data: ${JSON.stringify(payload)}\n\n`);
           res.end();
         }
@@ -481,7 +490,7 @@ app.post('/api-proxy', async (req, res) => {
     const status = Number.isInteger(error?.status) ? error.status : 502;
     const payload = errorPayload({ requestId, status, error });
     console.error(`[Node Proxy] [${requestId}] Error proxying request for ${apiClient.name}:`, safeMessage(error));
-    recordDiagnostic({ ...requestInfo, outcome: 'failed', category: payload.error.category, status, durationMs: Date.now() - startedAt });
+    recordDiagnostic({ ...requestInfo, ...connectionDiagnosticDetails(error), outcome: 'failed', category: payload.error.category, status, durationMs: Date.now() - startedAt });
     if (!res.headersSent) res.status(status).json(payload);
   }
 });

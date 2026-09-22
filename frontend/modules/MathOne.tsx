@@ -232,9 +232,9 @@ export const MathOne: React.FC = () => {
           if (controller.signal.aborted || (!rateLimited && !networkFailed) || attempt >= retryDelaysMs.length) throw error;
           const seconds = retryDelaysMs[attempt] / 1000;
           const cause = rateLimited ? '触发 Vertex 限流' : '本机代理/网络短暂中断';
-          setProgressMsg(`${currentProgress}${cause}，${seconds} 秒后自动重试（${attempt + 1}/${retryDelaysMs.length}）…`);
+          setProgressMsg(`${currentProgress}${cause}，${seconds} 秒后会用原卷页面启动新的独立演算（${attempt + 1}/${retryDelaysMs.length}）…`);
           await waitForRetry(retryDelaysMs[attempt], controller.signal);
-          setProgressMsg(`${currentProgress}正在自动重试…`);
+          setProgressMsg(`${currentProgress}正在从原卷页面重新独立演算…`);
         }
       }
     };
@@ -267,7 +267,7 @@ export const MathOne: React.FC = () => {
 
         const question = queue[index];
         const questionNumber = index + 1;
-        currentProgress = `正在解答第 ${questionNumber}/${queue.length} 题（原卷第 ${question.id} 题）`;
+        currentProgress = `已锁定原卷第 ${question.id} 题，正在由独立演算窗口解答第 ${questionNumber}/${queue.length} 题`;
         setProgressMsg(`${currentProgress}…`);
         checkpointRef.current = { queue, nextIndex: index, completedAnswer };
         const relevantAttachments = attachmentsForQuestion(attachments, question);
@@ -287,24 +287,23 @@ export const MathOne: React.FC = () => {
           { enableGoogleCodeExecution: true }
         ));
 
-        // Do not silently accept an answer cut off in the middle of a formula
-        // or one that never reached its final result. One focused continuation
-        // is far safer than letting the next question conceal the truncation.
+        // A cut-off answer must not be used as the next request's context:
+        // start a fresh independent solve from the original page instead. This
+        // mirrors the source-reader → solver-window workflow and prevents an
+        // early algebra mistake from propagating through a continuation.
         if (!hasFinalAnswer(questionOutput) || looksCutOff(questionOutput)) {
-          const continuationPrompt = `继续完成同一道考研数学一题。下面的已有解答因输出中断或未写完而停止。请从最后一句继续，不要重复已有推导、不要输出题号，仍须只输出解答正文，并以 **答：** 给出最终结果。先使用可用代码执行工具核验尚未完成的计算；不要提及代码或工具。\n\n题目定位：原卷第 ${question.id} 题，${question.text}\n\n已有解答：\n${questionOutput}`;
-          const continuation = await withTransientRetry(() => streamMessage(
-            continuationPrompt,
+          setProgressMsg(`第 ${questionNumber}/${queue.length} 题的输出未完成；正在从原卷页面启动新的独立演算，不沿用半截答案…`);
+          questionOutput = await withTransientRetry(() => streamMessage(
+            questionPrompt,
             relevantAttachments,
             (_delta, full) => {
-              const extended = `${questionOutput}\n\n${full}`;
-              setAnswer(appendAnswer(completedAnswer, formatSingleQuestionAnswer(extended, questionNumber)));
+              setAnswer(appendAnswer(completedAnswer, formatSingleQuestionAnswer(full, questionNumber)));
             },
             controller.signal,
             config,
             undefined,
             { enableGoogleCodeExecution: true }
           ));
-          questionOutput = `${questionOutput}\n\n${continuation}`;
         }
 
         completedAnswer = appendAnswer(completedAnswer, formatSingleQuestionAnswer(questionOutput, questionNumber));
@@ -404,7 +403,7 @@ export const MathOne: React.FC = () => {
         ) : (
           <button onClick={() => runDirectSolve(canResume)} className="w-full bg-blue-600 hover:bg-blue-700 active:scale-[0.99] text-white py-2.5 rounded-xl font-semibold flex items-center justify-center gap-2 transition-all shadow-sm text-sm">
             {canResume ? <Play size={16} className="fill-current" /> : isDone || isInterrupted ? <RotateCcw size={16} /> : <Play size={16} className="fill-current" />}
-            {canResume ? `继续分析（从第 ${checkpointRef.current!.nextIndex + 1} 题）` : isDone || isInterrupted ? '重新开始分析' : '开始分析'}
+            {canResume ? `继续分析（独立重算第 ${checkpointRef.current!.nextIndex + 1} 题）` : isDone || isInterrupted ? '重新开始分析' : '开始分析'}
           </button>
         )}
       </div>

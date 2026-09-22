@@ -129,6 +129,23 @@ const attachmentsForQuestion = (attachments: Attachment[], question: PaperQuesti
 
 const appendAnswer = (completed: string, current: string): string => completed ? `${completed}\n\n${current}` : current;
 
+const isVertexRateLimit = (error: unknown): boolean => {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  return /\brate_limited\b|\b429\b|RESOURCE_EXHAUSTED/i.test(message);
+};
+
+const waitForRetry = (milliseconds: number, signal: AbortSignal): Promise<void> => new Promise((resolve, reject) => {
+  const timer = window.setTimeout(() => {
+    signal.removeEventListener('abort', onAbort);
+    resolve();
+  }, milliseconds);
+  const onAbort = () => {
+    window.clearTimeout(timer);
+    reject(new Error('Aborted'));
+  };
+  signal.addEventListener('abort', onAbort, { once: true });
+});
+
 export const MathOne: React.FC = () => {
   const [textInput, setTextInput] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -184,17 +201,33 @@ export const MathOne: React.FC = () => {
 
     const sourceText = textInput || '无可用文字层，请完全根据上传的试卷页面图片识别。';
     let currentProgress = '正在识别试卷题目队列';
+    const withRateLimitRetry = async <T,>(request: () => Promise<T>): Promise<T> => {
+      // Vertex recommends exponential backoff for RESOURCE_EXHAUSTED.  Keeping
+      // the current question in memory means a retry never restarts the paper.
+      const retryDelaysMs = [10_000, 20_000, 40_000];
+      for (let attempt = 0; ; attempt += 1) {
+        try {
+          return await request();
+        } catch (error) {
+          if (controller.signal.aborted || !isVertexRateLimit(error) || attempt >= retryDelaysMs.length) throw error;
+          const seconds = retryDelaysMs[attempt] / 1000;
+          setProgressMsg(`${currentProgress}触发 Vertex 限流，${seconds} 秒后自动重试（${attempt + 1}/${retryDelaysMs.length}）…`);
+          await waitForRetry(retryDelaysMs[attempt], controller.signal);
+          setProgressMsg(`${currentProgress}正在自动重试…`);
+        }
+      }
+    };
     try {
       // The queue is deliberately invisible: splitting the paper here keeps a
       // single answer request small enough to finish, while the reader sees one
       // ordinary, continuous answer document rather than a multi-question UI.
-      const queueOutput = await streamMessage(
+      const queueOutput = await withRateLimitRetry(() => streamMessage(
         `${MATH_SPLIT_PROMPT}\n\n试卷文本（扫描件以上传的页面图片为准）：\n${sourceText}`,
         attachments,
         () => {},
         controller.signal,
         config
-      );
+      ));
 
       const questions = parsePaperQuestions(queueOutput);
       // A model can occasionally refuse the JSON-only request. Retain the old
@@ -216,7 +249,7 @@ export const MathOne: React.FC = () => {
           ? `请在随附的试卷页面中定位原卷第 ${question.id} 题；定位提示：${question.text}。只解这一题及其全部小问。`
           : `当前题目（统一编号为 ${questionNumber}，原卷题号为 ${question.id}，定位提示：${question.text}）：\n${sourceText}`;
         const questionPrompt = `${MATH_QUESTION_PROMPT}\n\n${questionSource}`;
-        let questionOutput = await streamMessage(
+        let questionOutput = await withRateLimitRetry(() => streamMessage(
           questionPrompt,
           relevantAttachments,
           (_delta, full) => {
@@ -226,14 +259,14 @@ export const MathOne: React.FC = () => {
           config,
           undefined,
           { enableGoogleCodeExecution: true }
-        );
+        ));
 
         // Do not silently accept an answer cut off in the middle of a formula
         // or one that never reached its final result. One focused continuation
         // is far safer than letting the next question conceal the truncation.
         if (!hasFinalAnswer(questionOutput) || looksCutOff(questionOutput)) {
           const continuationPrompt = `继续完成同一道考研数学一题。下面的已有解答因输出中断或未写完而停止。请从最后一句继续，不要重复已有推导、不要输出题号，仍须只输出解答正文，并以 **答：** 给出最终结果。先使用可用代码执行工具核验尚未完成的计算；不要提及代码或工具。\n\n题目定位：原卷第 ${question.id} 题，${question.text}\n\n已有解答：\n${questionOutput}`;
-          const continuation = await streamMessage(
+          const continuation = await withRateLimitRetry(() => streamMessage(
             continuationPrompt,
             relevantAttachments,
             (_delta, full) => {
@@ -244,7 +277,7 @@ export const MathOne: React.FC = () => {
             config,
             undefined,
             { enableGoogleCodeExecution: true }
-          );
+          ));
           questionOutput = `${questionOutput}\n\n${continuation}`;
         }
 

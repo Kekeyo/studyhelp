@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { AlertCircle, ArrowUpToLine, Check, ChevronDown, Copy, Download, Edit3, FileText, Layers, Play, RotateCcw, Square } from 'lucide-react';
+import { AlertCircle, Check, ChevronDown, Copy, Download, Edit3, FileText, Layers, Play, RotateCcw, Square } from 'lucide-react';
 import Uploader from '../components/Uploader.tsx';
 import MarkdownRenderer from '../components/MarkdownRenderer.tsx';
 import { Attachment, TaskStatus } from '../types.ts';
@@ -168,9 +168,7 @@ export const MathOne: React.FC = () => {
   const [isEditing, setIsEditing] = useState(false);
   const [editContent, setEditContent] = useState('');
   const [isExportMenuOpen, setIsExportMenuOpen] = useState(false);
-  const [answerScrollTop, setAnswerScrollTop] = useState(0);
   const answerRenderRef = useRef<HTMLDivElement>(null);
-  const answerTopRef = useRef<HTMLDivElement>(null);
   const answerScrollContainerRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const checkpointRef = useRef<PaperRunCheckpoint | null>(null);
@@ -367,10 +365,6 @@ export const MathOne: React.FC = () => {
     setIsEditing(previous => !previous);
   };
 
-  const scrollToAnswerTop = () => {
-    answerTopRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  };
-
   const leftContent = (
     <div className="w-full h-full flex flex-col gap-3.5 bg-white rounded-2xl shadow-sm border border-slate-200/80 p-4 overflow-y-auto min-h-0">
       <div className="flex items-center justify-between shrink-0">
@@ -425,11 +419,13 @@ export const MathOne: React.FC = () => {
   );
 
   const rightContent = (
-    <div
-      ref={answerScrollContainerRef}
-      onScroll={(event) => setAnswerScrollTop(event.currentTarget.scrollTop)}
-      className="w-full h-full min-h-0 flex flex-col gap-4 overflow-y-auto pr-1"
-    >
+    <div className="w-full h-full min-h-0 flex flex-col gap-3 overflow-hidden pr-1">
+      {isProcessing && (
+        <div className="shrink-0 rounded-xl border border-blue-100 bg-white/95 px-3 py-2 text-xs text-slate-500 shadow-sm">
+          {progressMsg || '正在计算并整理整卷答案…'}
+        </div>
+      )}
+
       {!answer && !isProcessing && (
         <div className="flex-1 bg-white rounded-2xl border border-slate-200/80 p-8 flex flex-col items-center justify-center text-center">
           <div className="w-14 h-14 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center mb-3 shadow-xs"><Layers size={26} /></div>
@@ -438,17 +434,9 @@ export const MathOne: React.FC = () => {
         </div>
       )}
 
-      {isProcessing && !answer && (
-        <p className="text-xs text-slate-400 px-2 pt-2">{progressMsg || '正在计算并整理整卷答案…'}</p>
-      )}
-
-      {isProcessing && answer && (
-        <p className="text-xs text-slate-400 px-2">{progressMsg || '正在继续整理答案…'}</p>
-      )}
-
       {answer && (
-        <div className="bg-white rounded-2xl shadow-sm border-2 border-blue-100 p-5 shrink-0">
-          <div ref={answerTopRef} className="flex flex-wrap items-center justify-end gap-1.5 border-b border-slate-100 pb-3 mb-4">
+        <div className="flex-1 min-h-0 bg-white rounded-2xl shadow-sm border-2 border-blue-100 p-5 flex flex-col overflow-hidden">
+          <div className="shrink-0 flex flex-wrap items-center justify-end gap-1.5 border-b border-slate-100 pb-3 mb-4">
             <div className="flex items-center gap-1.5">
               <button onClick={handleCopy} className="px-2.5 py-1 text-xs font-medium border border-slate-200 rounded-lg hover:bg-blue-50 transition-colors flex items-center gap-1">
                 {copied ? <Check size={13} className="text-emerald-500" /> : <Copy size={13} />}{copied ? '已复制' : '复制'}
@@ -497,43 +485,36 @@ export const MathOne: React.FC = () => {
             </div>
           </div>
           {isEditing ? (
-            <div className="space-y-3">
+            <div className="flex-1 min-h-0 grid grid-rows-2 gap-3 overflow-hidden">
               <textarea
                 value={editContent}
                 onChange={(event) => setEditContent(event.target.value)}
-                className="w-full h-80 p-3.5 text-xs font-mono bg-slate-50 border border-blue-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:bg-white outline-none"
+                className="w-full min-h-0 h-full p-3.5 text-xs font-mono bg-slate-50 border border-blue-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:bg-white outline-none resize-none"
                 aria-label="编辑解答内容"
               />
-              <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200">
-                <div className="text-xs font-semibold text-slate-400 mb-1.5">实时渲染预览</div>
+              <div className="min-h-0 p-3.5 bg-slate-50 rounded-xl border border-slate-200 flex flex-col">
+                <div className="shrink-0 text-xs font-semibold text-slate-400 mb-1.5">实时渲染预览</div>
+                <div className="flex-1 min-h-0 overflow-y-auto pr-1">
+                  <MarkdownRenderer
+                    content={editContent}
+                    className="prose-p:my-3 prose-ol:my-0 prose-ol:pl-6 prose-li:my-6 prose-li:pl-1"
+                  />
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div
+              ref={answerScrollContainerRef}
+              className="flex-1 min-h-0 overflow-y-auto pr-1"
+            >
+              <div ref={answerRenderRef}>
                 <MarkdownRenderer
-                  content={editContent}
+                  content={answer}
                   className="prose-p:my-3 prose-ol:my-0 prose-ol:pl-6 prose-li:my-6 prose-li:pl-1"
                 />
               </div>
             </div>
-          ) : (
-            <div ref={answerRenderRef}>
-            <MarkdownRenderer
-              content={answer}
-              className="prose-p:my-3 prose-ol:my-0 prose-ol:pl-6 prose-li:my-6 prose-li:pl-1"
-            />
-            </div>
           )}
-        </div>
-      )}
-
-      {answer && answerScrollTop > 120 && (
-        <div className="sticky bottom-4 right-4 self-end z-40 animate-in fade-in slide-in-from-bottom-3 duration-200">
-          <button
-            type="button"
-            onClick={scrollToAnswerTop}
-            className="bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold px-3.5 py-2 rounded-xl shadow-lg hover:shadow-xl transition-all flex items-center gap-1.5"
-            title="返回解答顶部（复制、编辑、导出）"
-          >
-            <ArrowUpToLine size={13} />
-            <span>解答顶部（复制/编辑/导出）</span>
-          </button>
         </div>
       )}
     </div>
